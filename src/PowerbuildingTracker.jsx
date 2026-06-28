@@ -1045,24 +1045,46 @@ export default function App() {
     const wId = workout.id;
     const newEntries = [];
     workout.exercises.forEach((ex, eIdx) => {
-      if (ex.lift) return; // 1RM exercises — weight is auto-calculated, skip history
       const wu = ex.warmup || 0;
       // For choice exercises (slash names OR alts), save under whichever variant was chosen
       const choiceKey = `${wId}_e${eIdx}_choice`;
       const isChoice = ex.name.includes(" / ") || !!ex.alts;
       const defaultChoice = ex.alts ? ex.alts[0] : ex.name.split(" / ")[0].trim();
-      const savedName = isChoice
-        ? (logs[choiceKey] || defaultChoice)
-        : ex.name;
+      const savedName = isChoice ? (logs[choiceKey] || defaultChoice) : ex.name;
+
+      if (ex.lift) {
+        // 1RM exercise — weight is auto-calculated from PRs, log working sets only
+        const oneRM = prs[ex.lift] || 0;
+        if (oneRM <= 0) return; // no PR set, nothing to log
+        for (let s = wu; s < wu + ex.sets; s++) {
+          // Calculate the weight that was shown to the user
+          let w = null;
+          if (ex.pct && ex.pctHigh) {
+            // Range — log the midpoint
+            w = round2_5(oneRM * ((ex.pct + ex.pctHigh) / 2) / 100);
+          } else if (ex.pct) {
+            w = calcKg(ex.pct, oneRM);
+          }
+          if (w && w > 0) newEntries.push({
+            name: savedName,
+            weight: w,
+            reps: ex.reps,
+            rpe: ex.rpe,
+            date: now
+          });
+        }
+        return;
+      }
+
+      // Manual weight exercise
       for (let s = wu; s < wu + ex.sets; s++) {
         const lk = `${wId}_e${eIdx}_s${s}`;
         const w = parseFloat(logs[lk+"_w"]);
-        // reps and rpe come from the PDF (ex.reps, ex.rpe) — no longer user-entered
         if (w > 0) newEntries.push({
-          name: savedName,  // exact chosen name, or exercise name for non-choice exercises
+          name: savedName,
           weight: w,
-          reps: ex.reps,   // from program data
-          rpe: ex.rpe,     // from program data
+          reps: ex.reps,
+          rpe: ex.rpe,
           date: now
         });
       }
