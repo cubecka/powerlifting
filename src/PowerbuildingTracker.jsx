@@ -1084,7 +1084,8 @@ export default function App() {
     const header = ["Cycle","Date","Type","Name / Note","Value","Reps","RPE"];
     const dataRows = [];
     history.forEach(h => {
-      dataRows.push([cycleNum, new Date(h.date).toLocaleDateString(), "exercise", h.name, h.weight, h.reps, h.rpe ?? ""]);
+      const repsClean = String(h.reps).replace(/–/g, '-').replace(/—/g, '-');
+      dataRows.push([cycleNum, new Date(h.date).toLocaleDateString(), "exercise", h.name, h.weight, repsClean, h.rpe ?? ""]);
     });
     bodyweights.forEach(b => {
       dataRows.push([cycleNum, new Date(b.date).toLocaleDateString(), "bodyweight", "Body weight", b.kg, "", ""]);
@@ -1092,7 +1093,7 @@ export default function App() {
     dataRows.sort((a, b) => new Date(a[1]) - new Date(b[1]));
     const allRows = [header, ...dataRows];
     const csv = allRows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
-    const blob = new Blob([csv], { type:"text/csv" });
+    const blob = new Blob(["\uFEFF" + csv], { type:"text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url;
     a.download = `powerbuilding_cycle${cycleNum}_${new Date().toISOString().slice(0,10)}.csv`;
