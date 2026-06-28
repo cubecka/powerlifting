@@ -1070,7 +1070,9 @@ export default function App() {
             weight: w,
             reps: ex.reps,
             rpe: ex.rpe,
-            date: now
+            date: now,
+            cycle: cycleNum,
+            workoutId: wId
           });
         }
         return;
@@ -1085,7 +1087,9 @@ export default function App() {
           weight: w,
           reps: ex.reps,
           rpe: ex.rpe,
-          date: now
+          date: now,
+          cycle: cycleNum,
+          workoutId: wId
         });
       }
     });
@@ -1107,10 +1111,10 @@ export default function App() {
     const dataRows = [];
     history.forEach(h => {
       const repsClean = String(h.reps).replace(/–/g, '-').replace(/—/g, '-');
-      dataRows.push([cycleNum, new Date(h.date).toLocaleDateString(), "exercise", h.name, h.weight, repsClean, h.rpe ?? ""]);
+      dataRows.push([h.cycle ?? cycleNum, new Date(h.date).toLocaleDateString(), "exercise", h.name, h.weight, repsClean, h.rpe ?? ""]);
     });
     bodyweights.forEach(b => {
-      dataRows.push([cycleNum, new Date(b.date).toLocaleDateString(), "bodyweight", "Morning weight", b.kg, "", ""]);
+      dataRows.push([b.cycle ?? cycleNum, new Date(b.date).toLocaleDateString(), "bodyweight", "Morning weight", b.kg, "", ""]);
     });
     dataRows.sort((a, b) => new Date(a[1]) - new Date(b[1]));
     const allRows = [header, ...dataRows];
@@ -1194,7 +1198,7 @@ export default function App() {
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 16px", borderBottom:"1px solid var(--b)", position:"sticky", top:0, background:"var(--bg)", zIndex:10 }}>
         <span style={{ fontSize:14, fontWeight:700, letterSpacing:".08em", textTransform:"uppercase", color:"var(--ac)" }}>Powerbuilding 4×</span>
         <div style={{ display:"flex", gap:2 }}>
-          {[["program","Program"],["setup","PRs"],["history","History"]].map(([id,label]) => (
+          {[["program","Program"],["setup","PRs"],["history","History"],["settings","Settings"]].map(([id,label]) => (
             <button key={id} onClick={() => setTab(id)}
               style={{ padding:"7px 14px", background:"none", border:"none", borderBottom: tab===id ? "2px solid var(--ac)" : "2px solid transparent", color: tab===id ? "var(--tx)" : "var(--mu)", fontSize:13, cursor:"pointer", transition:"all .15s" }}>
               {label}
@@ -1331,6 +1335,14 @@ export default function App() {
         {/* ── PRs TAB ── */}
         {tab === "setup" && <PRSetup prs={prs} onSave={savePRs} />}
 
+        {/* ── SETTINGS TAB ── */}
+        {tab === "settings" && (
+          <SettingsView
+            cycleNum={cycleNum}
+            onCycleChange={n => { setCycleNum(n); LS.set("pb_cycle", n); }}
+          />
+        )}
+
         {/* ── HISTORY TAB ── */}
         {tab === "history" && <HistoryView history={history} bodyweights={bodyweights} setBodyweights={bws => { setBodyweights(bws); LS.set("pb_bw", bws); }} onExport={exportCSV} cycleNum={cycleNum} />}
       </div>
@@ -1380,6 +1392,44 @@ function PRSetup({ prs, onSave }) {
   );
 }
 
+// ─── SETTINGS ─────────────────────────────────────────────────────────────────
+function SettingsView({ cycleNum, onCycleChange }) {
+  const [localCycle, setLocalCycle] = useState(cycleNum);
+  const [saved, setSaved] = useState(false);
+
+  function saveCycle() {
+    const n = parseInt(localCycle);
+    if (!n || n < 1) return;
+    onCycleChange(n);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize:20, fontWeight:700, marginBottom:20 }}>Settings</div>
+
+      {/* Cycle number */}
+      <div style={{ background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, padding:"14px 16px", marginBottom:12 }}>
+        <div style={{ fontSize:14, fontWeight:600, marginBottom:4 }}>Cycle number</div>
+        <div style={{ fontSize:13, color:"var(--su)", marginBottom:14, lineHeight:1.5 }}>
+          Currently on cycle <strong style={{ color:"var(--ac)" }}>{cycleNum}</strong>. If you accidentally reset to the wrong cycle number, correct it here.
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <input type="number" min="1" step="1" value={localCycle}
+            onChange={e => setLocalCycle(e.target.value)}
+            style={{ width:72, background:"var(--s1)", border:"1px solid var(--b)", borderRadius:6, color:"var(--tx)", fontSize:18, fontWeight:600, padding:"7px 10px" }}
+          />
+          <button onClick={saveCycle}
+            style={{ fontSize:13, padding:"7px 18px", background: saved ? "var(--green-dim, rgba(106,191,123,.15))" : "var(--s1)", border:"1px solid var(--b)", borderRadius:6, color: saved ? "var(--gr)" : "var(--tx)", cursor:"pointer", fontWeight:500, transition:"all .15s" }}>
+            {saved ? "✓ Saved" : "Update"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── HISTORY ─────────────────────────────────────────────────────────────────
 function HistoryView({ history, bodyweights, setBodyweights, onExport, cycleNum }) {
   const [expanded, setExpanded] = useState({});
@@ -1406,7 +1456,7 @@ function HistoryView({ history, bodyweights, setBodyweights, onExport, cycleNum 
   function logBodyweight() {
     const kg = parseFloat(bwInput);
     if (!kg || kg < 20 || kg > 300) return;
-    const entry = { date: new Date().toISOString(), kg };
+    const entry = { date: new Date().toISOString(), kg, cycle: cycleNum };
     setBodyweights([...bodyweights, entry]);
     setBwInput("");
   }
@@ -1476,6 +1526,9 @@ function HistoryView({ history, bodyweights, setBodyweights, onExport, cycleNum 
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                 <div>
                   <span style={{ fontSize:14, fontWeight:600, color:"var(--tx)" }}>{d}</span>
+                  {exEntries.length > 0 && exEntries[0].cycle && (
+                    <span style={{ fontSize:11, marginLeft:8, color:"var(--mu)" }}>cycle {exEntries[0].cycle}</span>
+                  )}
                   {bwEntry && (
                     <span style={{ fontSize:12, marginLeft:10, color:"var(--ac)" }}>⚖ {bwEntry.kg} kg</span>
                   )}
