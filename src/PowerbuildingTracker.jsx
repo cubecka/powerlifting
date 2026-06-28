@@ -1081,14 +1081,14 @@ export default function App() {
   // ── CSV export ──────────────────────────────────────────────────────────────
   function exportCSV() {
     if (!history.length && !bodyweights.length) { setFlash("No data to export yet."); setTimeout(() => setFlash(null), 2000); return; }
-    const header = ["Cycle","Date","Type","Name / Note","Value","Reps","RPE"];
+    const header = ["Cycle","Date","Type","Exercise","Weight (kg)","Reps","RPE"];
     const dataRows = [];
     history.forEach(h => {
       const repsClean = String(h.reps).replace(/–/g, '-').replace(/—/g, '-');
       dataRows.push([cycleNum, new Date(h.date).toLocaleDateString(), "exercise", h.name, h.weight, repsClean, h.rpe ?? ""]);
     });
     bodyweights.forEach(b => {
-      dataRows.push([cycleNum, new Date(b.date).toLocaleDateString(), "bodyweight", "Body weight", b.kg, "", ""]);
+      dataRows.push([cycleNum, new Date(b.date).toLocaleDateString(), "bodyweight", "Morning weight", b.kg, "", ""]);
     });
     dataRows.sort((a, b) => new Date(a[1]) - new Date(b[1]));
     const allRows = [header, ...dataRows];
