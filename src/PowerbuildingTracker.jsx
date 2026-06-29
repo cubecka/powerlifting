@@ -1473,15 +1473,17 @@ function HistoryView({ history, setHistory, bodyweights, setBodyweights, onExpor
   // Delete all entries for a specific workoutId, and bodyweight for that day
   // if no other workouts remain on that day
   function deleteWorkout(dateStr, wId) {
-    const nextHistory = history.filter(h => !(h.workoutId === wId && new Date(h.date).toLocaleDateString() === dateStr));
-    setHistory(nextHistory);
-    // Check if any other workouts remain on that day
-    const otherWorkoutsOnDay = nextHistory.some(h => new Date(h.date).toLocaleDateString() === dateStr);
-    if (!otherWorkoutsOnDay) {
-      // Remove bodyweight for that day too
-      setBodyweights(bodyweights.filter(b => new Date(b.date).toLocaleDateString() !== dateStr));
-    }
+  const nextHistory = history.filter(h => {
+    const hDate = new Date(h.date).toLocaleDateString();
+    const hWid = h.workoutId || "unknown";
+    return !(hWid === wId && hDate === dateStr);
+  });
+  setHistory(nextHistory);
+  const otherWorkoutsOnDay = nextHistory.some(h => new Date(h.date).toLocaleDateString() === dateStr);
+  if (!otherWorkoutsOnDay) {
+    setBodyweights(bodyweights.filter(b => new Date(b.date).toLocaleDateString() !== dateStr));
   }
+}
 
   // Last two distinct-day bodyweight entries for diff display
   const sortedBws = [...bodyweights].sort((a,b) => new Date(b.date)-new Date(a.date));
