@@ -1196,7 +1196,7 @@ export default function App() {
 
       {/* Top bar */}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 16px", borderBottom:"1px solid var(--b)", position:"sticky", top:0, background:"var(--bg)", zIndex:10 }}>
-        <span style={{ fontSize:14, fontWeight:700, letterSpacing:".08em", textTransform:"uppercase", color:"var(--ac)" }}>Powerbuilding 4×</span>
+        <span style={{ fontSize:14, fontWeight:700, letterSpacing:".08em", textTransform:"uppercase", color:"var(--ac)" }}>PB</span>
         <div style={{ display:"flex", gap:2 }}>
           {[["program","Program"],["setup","PRs"],["history","History"],["settings","Settings"]].map(([id,label]) => (
             <button key={id} onClick={() => setTab(id)}
@@ -1344,7 +1344,7 @@ export default function App() {
         )}
 
         {/* ── HISTORY TAB ── */}
-        {tab === "history" && <HistoryView history={history} bodyweights={bodyweights} setBodyweights={bws => { setBodyweights(bws); LS.set("pb_bw", bws); }} onExport={exportCSV} cycleNum={cycleNum} />}
+        {tab === "history" && <HistoryView history={history} setHistory={next => { setHistory(next); LS.set("pb_hist", next); }} bodyweights={bodyweights} setBodyweights={bws => { setBodyweights(bws); LS.set("pb_bw", bws); }} onExport={exportCSV} cycleNum={cycleNum} />}
       </div>
 
       {flash && <Flash msg={flash} />}
@@ -1431,36 +1431,62 @@ function SettingsView({ cycleNum, onCycleChange }) {
 }
 
 // ─── HISTORY ─────────────────────────────────────────────────────────────────
-function HistoryView({ history, bodyweights, setBodyweights, onExport, cycleNum }) {
+function HistoryView({ history, setHistory, bodyweights, setBodyweights, onExport, cycleNum }) {
   const [expanded, setExpanded] = useState({});
   const [bwInput, setBwInput] = useState("");
 
-  // Group exercise history entries by date (day string)
+  // Group exercise history by date → by workoutId (so two workouts same day stay separate)
+  // Structure: byDate[dateStr] = { workouts: { [wId]: {label, entries[]} }, bw: entry|null }
   const byDate = {};
   history.forEach(h => {
     const d = new Date(h.date).toLocaleDateString();
-    if (!byDate[d]) byDate[d] = [];
-    byDate[d].push(h);
+    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null };
+    const wId = h.workoutId || "unknown";
+    if (!byDate[d].workouts[wId]) byDate[d].workouts[wId] = { entries: [] };
+    byDate[d].workouts[wId].entries.push(h);
   });
-  // Add bodyweight entries as special date entries
+  // One bodyweight entry per day (most recent)
   bodyweights.forEach(b => {
     const d = new Date(b.date).toLocaleDateString();
-    if (!byDate[d]) byDate[d] = [];
-    byDate[d].push({ _bw: true, kg: b.kg, date: b.date });
+    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null };
+    // Keep most recent entry for the day
+    if (!byDate[d].bw || new Date(b.date) > new Date(byDate[d].bw.date)) {
+      byDate[d].bw = b;
+    }
   });
 
   const dates = Object.keys(byDate).sort((a,b) => new Date(b) - new Date(a));
-
   function toggleDate(d) { setExpanded(e => ({ ...e, [d]: !e[d] })); }
 
+  // Overwrite today's bodyweight entry (same day = replace)
   function logBodyweight() {
     const kg = parseFloat(bwInput);
     if (!kg || kg < 20 || kg > 300) return;
+    const today = new Date().toLocaleDateString();
     const entry = { date: new Date().toISOString(), kg, cycle: cycleNum };
-    setBodyweights([...bodyweights, entry]);
+    // Remove any existing entry for today, then add new one
+    const next = bodyweights.filter(b => new Date(b.date).toLocaleDateString() !== today);
+    setBodyweights([...next, entry]);
     setBwInput("");
   }
 
+  // Delete all entries for a specific workoutId, and bodyweight for that day
+  // if no other workouts remain on that day
+  function deleteWorkout(dateStr, wId) {
+    const nextHistory = history.filter(h => !(h.workoutId === wId && new Date(h.date).toLocaleDateString() === dateStr));
+    setHistory(nextHistory);
+    // Check if any other workouts remain on that day
+    const otherWorkoutsOnDay = nextHistory.some(h => new Date(h.date).toLocaleDateString() === dateStr);
+    if (!otherWorkoutsOnDay) {
+      // Remove bodyweight for that day too
+      setBodyweights(bodyweights.filter(b => new Date(b.date).toLocaleDateString() !== dateStr));
+    }
+  }
+
+  // Last two distinct-day bodyweight entries for diff display
+  const sortedBws = [...bodyweights].sort((a,b) => new Date(b.date)-new Date(a.date));
+  const lastBw = sortedBws[0];
+  const prevBw = sortedBws.find(b => new Date(b.date).toLocaleDateString() !== new Date(lastBw?.date||0).toLocaleDateString());
   const hasData = history.length > 0 || bodyweights.length > 0;
 
   return (
@@ -1477,7 +1503,7 @@ function HistoryView({ history, bodyweights, setBodyweights, onExport, cycleNum 
       {/* Body weight tracker */}
       <div style={{ background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, padding:"12px 14px", marginBottom:20 }}>
         <div style={{ fontSize:13, fontWeight:600, marginBottom:8, color:"var(--tx)" }}>Morning weight</div>
-        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+        <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
           <input type="number" step="0.1" min="20" max="300" placeholder="kg"
             value={bwInput} onChange={e => setBwInput(e.target.value)}
             onKeyDown={e => e.key === "Enter" && logBodyweight()}
@@ -1488,11 +1514,11 @@ function HistoryView({ history, bodyweights, setBodyweights, onExport, cycleNum 
             style={{ fontSize:13, padding:"6px 14px", background:"var(--ac)", color:"#000", border:"none", borderRadius:6, fontWeight:600, cursor:"pointer" }}>
             Log
           </button>
-          {bodyweights.length > 0 && (
+          {lastBw && (
             <span style={{ fontSize:12, color:"var(--mu)", marginLeft:4 }}>
-              Last: <strong style={{ color:"var(--ac)" }}>{bodyweights[bodyweights.length-1].kg} kg</strong>
-              {bodyweights.length > 1 && (() => {
-                const diff = bodyweights[bodyweights.length-1].kg - bodyweights[bodyweights.length-2].kg;
+              Last: <strong style={{ color:"var(--ac)" }}>{lastBw.kg} kg</strong>
+              {prevBw && (() => {
+                const diff = lastBw.kg - prevBw.kg;
                 const sign = diff > 0 ? "+" : "";
                 return <span style={{ color: diff > 0 ? "#e07070" : "var(--gr)", marginLeft:4 }}>{sign}{diff.toFixed(1)}</span>;
               })()}
@@ -1510,69 +1536,93 @@ function HistoryView({ history, bodyweights, setBodyweights, onExport, cycleNum 
       )}
 
       {dates.map(d => {
-        const entries = byDate[d];
+        const dayData = byDate[d];
         const isOpen = !!expanded[d];
-        const exEntries = entries.filter(e => !e._bw);
-        const bwEntry = entries.find(e => e._bw);
-        // Count unique exercise names
-        const exNames = [...new Set(exEntries.map(e => e.name))];
-        const bestWeight = exEntries.length ? Math.max(...exEntries.map(e => e.weight||0)) : null;
+        const workoutIds = Object.keys(dayData.workouts);
+        const allEntries = workoutIds.flatMap(wId => dayData.workouts[wId].entries);
+        const exNames = [...new Set(allEntries.map(e => e.name))];
+        const cycle = allEntries[0]?.cycle;
 
         return (
           <div key={d} style={{ marginBottom:8 }}>
-            {/* Bubble header — always visible */}
+            {/* Bubble header */}
             <button onClick={() => toggleDate(d)}
               style={{ display:"block", width:"100%", background:"var(--s2)", border:"1px solid var(--b)", borderRadius: isOpen ? "12px 12px 0 0" : 12, padding:"11px 14px", textAlign:"left", cursor:"pointer" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                 <div>
                   <span style={{ fontSize:14, fontWeight:600, color:"var(--tx)" }}>{d}</span>
-                  {exEntries.length > 0 && exEntries[0].cycle && (
-                    <span style={{ fontSize:11, marginLeft:8, color:"var(--mu)" }}>cycle {exEntries[0].cycle}</span>
-                  )}
-                  {bwEntry && (
-                    <span style={{ fontSize:12, marginLeft:10, color:"var(--ac)" }}>⚖ {bwEntry.kg} kg</span>
-                  )}
+                  {cycle && <span style={{ fontSize:11, marginLeft:8, color:"var(--mu)" }}>cycle {cycle}</span>}
+                  {dayData.bw && <span style={{ fontSize:12, marginLeft:10, color:"var(--ac)" }}>⚖ {dayData.bw.kg} kg</span>}
                 </div>
                 <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                  {exNames.length > 0 && (
-                    <span style={{ fontSize:12, color:"var(--mu)" }}>{exNames.length} exercise{exNames.length>1?"s":""}</span>
-                  )}
-                  <span style={{ fontSize:14, color:"var(--mu)", transition:"transform .2s", display:"inline-block", transform: isOpen ? "rotate(90deg)" : "none" }}>›</span>
+                  {workoutIds.length > 0 && <span style={{ fontSize:12, color:"var(--mu)" }}>{workoutIds.length} workout{workoutIds.length>1?"s":""} · {exNames.length} exercises</span>}
+                  <span style={{ fontSize:14, color:"var(--mu)", display:"inline-block", transition:"transform .2s", transform: isOpen?"rotate(90deg)":"none" }}>›</span>
                 </div>
               </div>
               {!isOpen && exNames.length > 0 && (
                 <div style={{ fontSize:11, color:"var(--mu)", marginTop:3 }}>
-                  {exNames.slice(0,4).join(" · ")}{exNames.length>4 ? ` · +${exNames.length-4} more` : ""}
+                  {exNames.slice(0,4).join(" · ")}{exNames.length>4?` · +${exNames.length-4} more`:""}
                 </div>
               )}
             </button>
 
-            {/* Expanded content */}
+            {/* Expanded */}
             {isOpen && (
               <div style={{ background:"var(--s1)", border:"1px solid var(--b)", borderTop:"none", borderRadius:"0 0 12px 12px", padding:"10px 14px" }}>
-                {/* Group by exercise name within this date */}
-                {exNames.map(name => {
-                  const sets = exEntries.filter(e => e.name === name);
-                  const best = Math.max(...sets.map(e => e.weight||0));
+
+                {/* Each workout block */}
+                {workoutIds.map((wId, wi) => {
+                  const wo = dayData.workouts[wId];
+                  const woExNames = [...new Set(wo.entries.map(e => e.name))];
+                  // Find workout label from PROGRAM data
+                  const woLabel = (() => {
+                    for (const wk of PROGRAM) {
+                      const found = wk.workouts.find(w => w.id === wId);
+                      if (found) return `${wk.label} · ${found.label}`;
+                    }
+                    return wId;
+                  })();
+
                   return (
-                    <div key={name} style={{ marginBottom:10 }}>
-                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:4 }}>
-                        <span style={{ fontSize:13, fontWeight:600, color:"var(--tx)" }}>{name}</span>
-                        <span style={{ fontSize:11, color:"var(--ac)" }}>best {best} kg</span>
+                    <div key={wId} style={{ marginBottom:14, paddingBottom:14, borderBottom: wi < workoutIds.length-1 ? "1px solid var(--b)" : "none" }}>
+                      {/* Workout label + delete */}
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                        <span style={{ fontSize:12, fontWeight:600, color:"var(--ac)", textTransform:"uppercase", letterSpacing:".05em" }}>{woLabel}</span>
+                        <button
+                          onClick={() => { if (window.confirm(`Delete "${woLabel}" from ${d}? This also removes today's morning weight if no other workouts remain.`)) deleteWorkout(d, wId); }}
+                          style={{ fontSize:11, padding:"2px 8px", borderRadius:20, background:"rgba(224,112,112,.1)", border:"1px solid rgba(224,112,112,.3)", color:"#e07070", cursor:"pointer" }}>
+                          🗑 Delete
+                        </button>
                       </div>
-                      {sets.map((e, i) => (
-                        <div key={i} style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:"var(--su)", paddingLeft:8, marginBottom:2 }}>
-                          <span>{e.weight} kg × {e.reps}</span>
-                          {e.rpe != null && <span style={{ color:"var(--mu)" }}>RPE {e.rpe}</span>}
-                        </div>
-                      ))}
+
+                      {/* Exercises */}
+                      {woExNames.map(name => {
+                        const sets = wo.entries.filter(e => e.name === name);
+                        const best = Math.max(...sets.map(e => e.weight||0));
+                        return (
+                          <div key={name} style={{ marginBottom:8 }}>
+                            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:3 }}>
+                              <span style={{ fontSize:13, fontWeight:600, color:"var(--tx)" }}>{name}</span>
+                              <span style={{ fontSize:11, color:"var(--ac)" }}>best {best} kg</span>
+                            </div>
+                            {sets.map((e, i) => (
+                              <div key={i} style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:"var(--su)", paddingLeft:8, marginBottom:2 }}>
+                                <span>{e.weight} kg × {e.reps}</span>
+                                {e.rpe != null && <span style={{ color:"var(--mu)" }}>RPE {e.rpe}</span>}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })}
                     </div>
                   );
                 })}
-                {bwEntry && (
-                  <div style={{ borderTop:"1px solid var(--b)", paddingTop:8, marginTop:4, fontSize:12, color:"var(--su)", display:"flex", justifyContent:"space-between" }}>
-                    <span>⚖ Body weight</span>
-                    <span style={{ color:"var(--ac)", fontWeight:600 }}>{bwEntry.kg} kg</span>
+
+                {/* Bodyweight */}
+                {dayData.bw && (
+                  <div style={{ borderTop: workoutIds.length > 0 ? "1px solid var(--b)" : "none", paddingTop: workoutIds.length > 0 ? 8 : 0, marginTop: workoutIds.length > 0 ? 4 : 0, fontSize:12, color:"var(--su)", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                    <span>⚖ Morning weight</span>
+                    <span style={{ color:"var(--ac)", fontWeight:600 }}>{dayData.bw.kg} kg</span>
                   </div>
                 )}
               </div>
