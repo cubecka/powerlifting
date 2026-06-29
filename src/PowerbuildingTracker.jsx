@@ -1589,9 +1589,9 @@ function HistoryView({ history, setHistory, bodyweights, setBodyweights, onExpor
                       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
                         <span style={{ fontSize:12, fontWeight:600, color:"var(--ac)", textTransform:"uppercase", letterSpacing:".05em" }}>{woLabel}</span>
                         <button
-                          onClick={() => { if (window.confirm(`Delete "${woLabel}" from ${d}? This also removes today's morning weight if no other workouts remain.`)) deleteWorkout(d, wId); }}
-                          style={{ fontSize:11, padding:"2px 8px", borderRadius:20, background:"rgba(224,112,112,.1)", border:"1px solid rgba(224,112,112,.3)", color:"#e07070", cursor:"pointer" }}>
-                          🗑 Delete
+                          onClick={() => { if (window.confirm(`Delete entire workout "${woLabel}" from ${d}?\n\nThis removes all ${wo.entries.length} logged sets. Morning weight is also removed if this is the only workout today.`)) deleteWorkout(d, wId); }}
+                          style={{ fontSize:12, padding:"4px 12px", borderRadius:6, background:"rgba(224,112,112,.1)", border:"1px solid rgba(224,112,112,.3)", color:"#e07070", cursor:"pointer", fontWeight:500 }}>
+                          🗑 Delete workout
                         </button>
                       </div>
 
