@@ -1756,11 +1756,14 @@ function TrainingTimeRow({ workoutId, dateStr, doneEntry, onSave }) {
 
   const hasTime = doneEntry?.startedAt || doneEntry?.finishedAt;
 
+  // Use the workout's actual completion timestamp as the date anchor —
+  // dateStr is a locale-formatted display string (e.g. "28. 6. 2026") and
+  // is NOT reliably parseable back into a Date, so we never parse it.
   function combineDateTime(hhmm) {
     if (!hhmm) return null;
     const [h, m] = hhmm.split(":").map(Number);
-    const base = new Date(dateStr); // dateStr is a toLocaleDateString() string, parseable by Date()
-    base.setHours(h, m, 0, 0);
+    const anchor = doneEntry?.completedAt ? new Date(doneEntry.completedAt) : new Date();
+    const base = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate(), h, m, 0, 0);
     return base.toISOString();
   }
 
