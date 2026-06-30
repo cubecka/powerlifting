@@ -34,8 +34,15 @@ async function db_loadAll(userId) {
     date: r.logged_at, cycle: r.cycle, _id: r.id
   }));
 
+  // doneMap[workoutId] = { completedAt, startedAt, finishedAt }
   const doneMap = {};
-  (doneRes.data || []).forEach(r => { doneMap[r.workout_id] = r.completed_at; });
+  (doneRes.data || []).forEach(r => {
+    doneMap[r.workout_id] = {
+      completedAt: r.completed_at,
+      startedAt: r.started_at || null,
+      finishedAt: r.finished_at || null
+    };
+  });
 
   const cycleNum = settingsRes.data ? settingsRes.data.current_cycle : 1;
 
@@ -59,6 +66,13 @@ async function db_insertWorkoutLogs(userId, entries) {
 async function db_markCompleted(userId, cycle, workoutId, completedAt) {
   await supabase.from("workout_completions").upsert(
     { user_id: userId, cycle, workout_id: workoutId, completed_at: completedAt },
+    { onConflict: "user_id,cycle,workout_id" }
+  );
+}
+
+async function db_setTrainingTime(userId, cycle, workoutId, completedAt, startedAt, finishedAt) {
+  await supabase.from("workout_completions").upsert(
+    { user_id: userId, cycle, workout_id: workoutId, completed_at: completedAt, started_at: startedAt, finished_at: finishedAt },
     { onConflict: "user_id,cycle,workout_id" }
   );
 }
@@ -1229,7 +1243,7 @@ function PowerbuildingApp({ userId, onLogout }) {
 
     // Update local state
     setHistory([...history, ...newEntries]);
-    setDoneMap({ ...doneMap, [wId]: now });
+    setDoneMap({ ...doneMap, [wId]: { completedAt: now, startedAt: doneMap[wId]?.startedAt || null, finishedAt: doneMap[wId]?.finishedAt || null } });
     setFlash("Workout saved! 💪");
     setTimeout(() => setFlash(null), 2500);
   }
@@ -1433,7 +1447,7 @@ function PowerbuildingApp({ userId, onLogout }) {
                 {/* Workouts stacked */}
                 {wkData.workouts.map((wo, woIdx) => {
                   const isDone = !!doneMap[wo.id];
-                  const doneDate = isDone ? new Date(doneMap[wo.id]).toLocaleDateString() : null;
+                  const doneDate = isDone ? new Date(doneMap[wo.id].completedAt).toLocaleDateString() : null;
                   return (
                     <button key={wo.id} onClick={() => setActiveWorkout({ weekIdx: wkIdx, workoutIdx: woIdx })}
                       style={{ display:"block", width:"100%", marginBottom:6, borderRadius:10, padding:"11px 14px", textAlign:"left", cursor:"pointer", transition:"border-color .15s, background .15s, opacity .15s",
@@ -1531,6 +1545,13 @@ function PowerbuildingApp({ userId, onLogout }) {
               const nextDone = { ...doneMap };
               delete nextDone[wId];
               setDoneMap(nextDone);
+            }}
+            doneMap={doneMap}
+            onSetTrainingTime={async (wId, startedAt, finishedAt) => {
+              const existing = doneMap[wId];
+              const completedAt = existing?.completedAt || new Date().toISOString();
+              await db_setTrainingTime(userId, cycleNum, wId, completedAt, startedAt, finishedAt);
+              setDoneMap({ ...doneMap, [wId]: { completedAt, startedAt, finishedAt } });
             }}
           />
         )}
@@ -1718,7 +1739,96 @@ function SettingsView({ cycleNum, onCycleChange, measurements, onAddMeasurement,
 }
 
 // ─── HISTORY ─────────────────────────────────────────────────────────────────
-function HistoryView({ history, bodyweights, measurements, onExport, cycleNum, onAddBodyweight, onDeleteWorkout }) {
+// ─── TRAINING TIME ROW ─────────────────────────────────────────────────────────
+// Manual start/finish time editor shown inside each workout block in History.
+// Times are entered as HH:MM and combined with the workout's date.
+function TrainingTimeRow({ workoutId, dateStr, doneEntry, onSave }) {
+  const [editing, setEditing] = useState(false);
+
+  const toHHMM = (iso) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+  };
+
+  const [startVal, setStartVal] = useState(toHHMM(doneEntry?.startedAt));
+  const [finishVal, setFinishVal] = useState(toHHMM(doneEntry?.finishedAt));
+
+  const hasTime = doneEntry?.startedAt || doneEntry?.finishedAt;
+
+  function combineDateTime(hhmm) {
+    if (!hhmm) return null;
+    const [h, m] = hhmm.split(":").map(Number);
+    const base = new Date(dateStr); // dateStr is a toLocaleDateString() string, parseable by Date()
+    base.setHours(h, m, 0, 0);
+    return base.toISOString();
+  }
+
+  function durationLabel() {
+    if (!doneEntry?.startedAt || !doneEntry?.finishedAt) return null;
+    const ms = new Date(doneEntry.finishedAt) - new Date(doneEntry.startedAt);
+    if (ms <= 0) return null;
+    const mins = Math.round(ms / 60000);
+    const h = Math.floor(mins / 60), m = mins % 60;
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  }
+
+  async function handleSave() {
+    const startedAt = combineDateTime(startVal);
+    const finishedAt = combineDateTime(finishVal);
+    await onSave(workoutId, startedAt, finishedAt);
+    setEditing(false);
+  }
+
+  if (!editing) {
+    return (
+      <div style={{ marginTop:8, paddingTop:8, borderTop:"1px solid var(--b)", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <div style={{ fontSize:12, color:"var(--su)" }}>
+          {hasTime ? (
+            <span>
+              🕐 {toHHMM(doneEntry.startedAt) || "—"} – {toHHMM(doneEntry.finishedAt) || "—"}
+              {durationLabel() && <span style={{ color:"var(--ac)", marginLeft:6 }}>({durationLabel()})</span>}
+            </span>
+          ) : (
+            <span style={{ color:"var(--mu)" }}>No training time logged</span>
+          )}
+        </div>
+        <button onClick={() => setEditing(true)}
+          style={{ fontSize:11, padding:"3px 10px", borderRadius:20, background:"var(--s2)", border:"1px solid var(--b)", color:"var(--su)", cursor:"pointer" }}>
+          {hasTime ? "Edit time" : "+ Add time"}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop:8, paddingTop:8, borderTop:"1px solid var(--b)" }}>
+      <div style={{ display:"flex", gap:10, alignItems:"flex-end", flexWrap:"wrap" }}>
+        <div>
+          <label style={{ fontSize:10, textTransform:"uppercase", color:"var(--mu)", display:"block", marginBottom:3 }}>Start</label>
+          <input type="time" value={startVal} onChange={e=>setStartVal(e.target.value)}
+            style={{ background:"var(--s2)", border:"1px solid var(--b)", borderRadius:6, color:"var(--tx)", fontSize:13, padding:"5px 8px" }} />
+        </div>
+        <div>
+          <label style={{ fontSize:10, textTransform:"uppercase", color:"var(--mu)", display:"block", marginBottom:3 }}>Finish</label>
+          <input type="time" value={finishVal} onChange={e=>setFinishVal(e.target.value)}
+            style={{ background:"var(--s2)", border:"1px solid var(--b)", borderRadius:6, color:"var(--tx)", fontSize:13, padding:"5px 8px" }} />
+        </div>
+        <button onClick={handleSave}
+          style={{ fontSize:12, padding:"6px 14px", background:"var(--ac)", border:"none", borderRadius:6, color:"#000", fontWeight:600, cursor:"pointer" }}>
+          Save
+        </button>
+        <button onClick={() => setEditing(false)}
+          style={{ fontSize:12, padding:"6px 14px", background:"var(--s2)", border:"1px solid var(--b)", borderRadius:6, color:"var(--su)", cursor:"pointer" }}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── HISTORY ─────────────────────────────────────────────────────────────────
+function HistoryView({ history, bodyweights, measurements, onExport, cycleNum, onAddBodyweight, onDeleteWorkout, doneMap, onSetTrainingTime }) {
   const [expanded, setExpanded] = useState({});
   const [bwInput, setBwInput] = useState("");
 
@@ -1898,6 +2008,14 @@ function HistoryView({ history, bodyweights, measurements, onExport, cycleNum, o
                           </div>
                         );
                       })}
+
+                      {/* Training time */}
+                      <TrainingTimeRow
+                        workoutId={wId}
+                        dateStr={d}
+                        doneEntry={doneMap[wId]}
+                        onSave={onSetTrainingTime}
+                      />
                     </div>
                   );
                 })}
