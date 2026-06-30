@@ -124,6 +124,35 @@ async function db_resetCycle(userId, nextCycle) {
   await supabase.from("workout_completions").delete().eq("user_id", userId);
 }
 
+// ── Supplements ────────────────────────────────────────────────────────────
+async function db_loadSupplements(userId) {
+  const [suppsRes, logsRes] = await Promise.all([
+    supabase.from("supplements").select("*").eq("user_id", userId).order("created_at", { ascending: true }),
+    supabase.from("supplement_logs").select("*").eq("user_id", userId),
+  ]);
+  return {
+    supplements: suppsRes.data || [],
+    logs: logsRes.data || [], // [{id, supplement_id, log_date}]
+  };
+}
+
+async function db_addSupplement(userId, name) {
+  const { data } = await supabase.from("supplements").insert({ user_id: userId, name }).select().single();
+  return data;
+}
+
+async function db_deactivateSupplement(userId, supplementId) {
+  await supabase.from("supplements").update({ active: false }).eq("id", supplementId).eq("user_id", userId);
+}
+
+async function db_toggleSupplementLog(userId, supplementId, dateStr, isChecked) {
+  if (isChecked) {
+    await supabase.from("supplement_logs").insert({ user_id: userId, supplement_id: supplementId, log_date: dateStr });
+  } else {
+    await supabase.from("supplement_logs").delete().eq("user_id", userId).eq("supplement_id", supplementId).eq("log_date", dateStr);
+  }
+}
+
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 const round2_5 = (kg) => Math.round(kg / 2.5) * 2.5;
 const calcKg = (pct, oneRM) => (oneRM > 0 ? round2_5(oneRM * pct / 100) : null);
@@ -1152,12 +1181,17 @@ function PowerbuildingApp({ userId, onLogout }) {
   const [showReset2, setShowReset2] = useState(false); // second confirm
   const [activeWorkout, setActiveWorkout] = useState(null);
   const [flash, setFlash] = useState(null);
+  const [supplements, setSupplements] = useState([]);   // active supplements list
+  const [suppLogs, setSuppLogs] = useState([]);          // [{id, supplement_id, log_date}]
 
   // Load everything from Supabase once on mount
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const data = await db_loadAll(userId);
+      const [data, suppData] = await Promise.all([
+        db_loadAll(userId),
+        db_loadSupplements(userId),
+      ]);
       if (cancelled) return;
       setPrs(data.prs);
       setHistory(data.history);
@@ -1165,6 +1199,8 @@ function PowerbuildingApp({ userId, onLogout }) {
       setMeasurements(data.measurements);
       setDoneMap(data.doneMap);
       setCycleNum(data.cycleNum);
+      setSupplements(suppData.supplements);
+      setSuppLogs(suppData.logs);
       setLoading(false);
     })();
     return () => { cancelled = true; };
@@ -1360,7 +1396,7 @@ function PowerbuildingApp({ userId, onLogout }) {
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 16px", borderBottom:"1px solid var(--b)", position:"sticky", top:0, background:"var(--bg)", zIndex:10 }}>
         <span style={{ fontSize:14, fontWeight:700, letterSpacing:".08em", textTransform:"uppercase", color:"var(--ac)" }}>PB</span>
         <div style={{ display:"flex", gap:2 }}>
-          {[["program","Program"],["setup","PRs"],["history","History"],["settings","Settings"]].map(([id,label]) => (
+          {[["program","Program"],["setup","PRs"],["history","History"],["supps","Supps"],["settings","Settings"]].map(([id,label]) => (
             <button key={id} onClick={() => setTab(id)}
               style={{ padding:"7px 14px", background:"none", border:"none", borderBottom: tab===id ? "2px solid var(--ac)" : "2px solid transparent", color: tab===id ? "var(--tx)" : "var(--mu)", fontSize:13, cursor:"pointer", transition:"all .15s" }}>
               {label}
@@ -1552,6 +1588,30 @@ function PowerbuildingApp({ userId, onLogout }) {
               const completedAt = existing?.completedAt || new Date().toISOString();
               await db_setTrainingTime(userId, cycleNum, wId, completedAt, startedAt, finishedAt);
               setDoneMap({ ...doneMap, [wId]: { completedAt, startedAt, finishedAt } });
+            }}
+          />
+        )}
+
+        {/* ── SUPPS TAB ── */}
+        {tab === "supps" && (
+          <SuppsView
+            supplements={supplements}
+            suppLogs={suppLogs}
+            onAdd={async (name) => {
+              const row = await db_addSupplement(userId, name);
+              if (row) setSupplements([...supplements, row]);
+            }}
+            onRemove={async (id) => {
+              await db_deactivateSupplement(userId, id);
+              setSupplements(supplements.filter(s => s.id !== id));
+            }}
+            onToggle={async (supplementId, dateStr, isChecked) => {
+              await db_toggleSupplementLog(userId, supplementId, dateStr, isChecked);
+              if (isChecked) {
+                setSuppLogs([...suppLogs, { supplement_id: supplementId, log_date: dateStr }]);
+              } else {
+                setSuppLogs(suppLogs.filter(l => !(l.supplement_id === supplementId && l.log_date === dateStr)));
+              }
             }}
           />
         )}
@@ -1826,6 +1886,133 @@ function TrainingTimeRow({ workoutId, dateStr, doneEntry, onSave }) {
           Cancel
         </button>
       </div>
+    </div>
+  );
+}
+
+// ─── HISTORY ─────────────────────────────────────────────────────────────────
+// ─── SUPPLEMENTS ───────────────────────────────────────────────────────────────
+// log_date format: YYYY-MM-DD (matches Postgres `date` type, no timezone ambiguity)
+function toDateKey(d) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth()+1).padStart(2,"0");
+  const dd = String(d.getDate()).padStart(2,"0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+function fmtDateKeyDisplay(key) {
+  const [y,m,d] = key.split("-").map(Number);
+  return new Date(y, m-1, d).toLocaleDateString(undefined, { weekday:"short", day:"numeric", month:"short", year:"numeric" });
+}
+
+function SuppsView({ supplements, suppLogs, onAdd, onRemove, onToggle }) {
+  const [selectedDate, setSelectedDate] = useState(() => toDateKey(new Date()));
+  const [newName, setNewName] = useState("");
+  const [showManage, setShowManage] = useState(false);
+
+  const todayKey = toDateKey(new Date());
+  const isToday = selectedDate === todayKey;
+
+  function shiftDate(days) {
+    const [y,m,d] = selectedDate.split("-").map(Number);
+    const dt = new Date(y, m-1, d);
+    dt.setDate(dt.getDate() + days);
+    setSelectedDate(toDateKey(dt));
+  }
+
+  function isChecked(supplementId) {
+    return suppLogs.some(l => l.supplement_id === supplementId && l.log_date === selectedDate);
+  }
+
+  async function handleAdd() {
+    const name = newName.trim();
+    if (!name) return;
+    await onAdd(name);
+    setNewName("");
+  }
+
+  const checkedCount = supplements.filter(s => isChecked(s.id)).length;
+
+  return (
+    <div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+        <div style={{ fontSize:20, fontWeight:700 }}>Supplements</div>
+        <button onClick={() => setShowManage(s => !s)}
+          style={{ fontSize:12, padding:"6px 14px", background:"var(--s2)", border:"1px solid var(--b)", borderRadius:6, color:"var(--su)", cursor:"pointer" }}>
+          {showManage ? "Done" : "Manage list"}
+        </button>
+      </div>
+
+      {/* Manage supplements list */}
+      {showManage && (
+        <div style={{ background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, padding:"14px 16px", marginBottom:16 }}>
+          <div style={{ fontSize:13, fontWeight:600, marginBottom:10 }}>Your supplements</div>
+          {supplements.length === 0 && <div style={{ fontSize:13, color:"var(--mu)", marginBottom:10 }}>No supplements added yet.</div>}
+          {supplements.map(s => (
+            <div key={s.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 0", borderBottom:"1px solid var(--b)" }}>
+              <span style={{ fontSize:14 }}>{s.name}</span>
+              <button onClick={() => { if (window.confirm(`Remove "${s.name}" from your list? Past history stays intact.`)) onRemove(s.id); }}
+                style={{ fontSize:11, padding:"3px 9px", borderRadius:20, background:"rgba(224,112,112,.1)", border:"1px solid rgba(224,112,112,.3)", color:"#e07070", cursor:"pointer" }}>
+                Remove
+              </button>
+            </div>
+          ))}
+          <div style={{ display:"flex", gap:8, marginTop:12 }}>
+            <input type="text" placeholder="e.g. Creatine" value={newName}
+              onChange={e=>setNewName(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && handleAdd()}
+              style={{ flex:1, background:"var(--s1)", border:"1px solid var(--b)", borderRadius:6, color:"var(--tx)", fontSize:14, padding:"7px 10px" }}
+            />
+            <button onClick={handleAdd}
+              style={{ fontSize:13, padding:"7px 16px", background:"var(--ac)", color:"#000", border:"none", borderRadius:6, fontWeight:600, cursor:"pointer" }}>
+              Add
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Date navigator */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, padding:"10px 14px", marginBottom:16 }}>
+        <button onClick={() => shiftDate(-1)}
+          style={{ background:"var(--s1)", border:"1px solid var(--b)", borderRadius:6, color:"var(--tx)", fontSize:14, padding:"5px 12px", cursor:"pointer" }}>‹</button>
+        <div style={{ textAlign:"center" }}>
+          <div style={{ fontSize:13, fontWeight:600 }}>{isToday ? "Today" : fmtDateKeyDisplay(selectedDate)}</div>
+          {!isToday && <button onClick={() => setSelectedDate(todayKey)} style={{ fontSize:11, color:"var(--ac)", background:"none", border:"none", cursor:"pointer", padding:0, marginTop:2 }}>Jump to today</button>}
+        </div>
+        <button onClick={() => shiftDate(1)} disabled={isToday}
+          style={{ background:"var(--s1)", border:"1px solid var(--b)", borderRadius:6, color: isToday ? "var(--mu)" : "var(--tx)", fontSize:14, padding:"5px 12px", cursor: isToday ? "default" : "pointer", opacity: isToday ? 0.4 : 1 }}>›</button>
+      </div>
+
+      {/* Checklist for selected day */}
+      {supplements.length === 0 ? (
+        <div style={{ textAlign:"center", padding:"40px 0", color:"var(--su)" }}>
+          <div style={{ fontSize:15, marginBottom:6 }}>No supplements yet</div>
+          <div style={{ fontSize:13, color:"var(--mu)" }}>Tap "Manage list" above to add your first one.</div>
+        </div>
+      ) : (
+        <div style={{ background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, overflow:"hidden" }}>
+          {supplements.map((s, i) => {
+            const checked = isChecked(s.id);
+            return (
+              <button key={s.id} onClick={() => onToggle(s.id, selectedDate, !checked)}
+                style={{ display:"flex", alignItems:"center", justifyContent:"space-between", width:"100%", padding:"13px 16px", background:"none", border:"none", borderBottom: i < supplements.length-1 ? "1px solid var(--b)" : "none", cursor:"pointer", textAlign:"left" }}>
+                <span style={{ fontSize:14, color: checked ? "var(--tx)" : "var(--su)" }}>{s.name}</span>
+                <span style={{
+                  width:22, height:22, borderRadius:6, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0,
+                  background: checked ? "var(--ac)" : "var(--s1)",
+                  border: checked ? "1px solid var(--ac)" : "1px solid var(--b2)",
+                  color: checked ? "#000" : "transparent", fontSize:14, fontWeight:700
+                }}>✓</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {supplements.length > 0 && (
+        <div style={{ fontSize:12, color:"var(--mu)", marginTop:10, textAlign:"center" }}>
+          {checkedCount} / {supplements.length} taken {isToday ? "today" : "on this day"}
+        </div>
+      )}
     </div>
   );
 }
