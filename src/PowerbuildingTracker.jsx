@@ -53,6 +53,12 @@ async function db_savePRs(userId, prs) {
   await supabase.from("prs").upsert({ user_id: userId, ...prs, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
 }
 
+async function db_logPRHistory(userId, cycle, prs) {
+  // Every PR save gets its own timestamped snapshot row — never overwritten,
+  // this is what powers the strength-over-time graph on the dashboard site.
+  await supabase.from("pr_history").insert({ user_id: userId, cycle, ...prs });
+}
+
 async function db_insertWorkoutLogs(userId, entries) {
   if (!entries.length) return;
   const rows = entries.map(e => ({
@@ -1235,6 +1241,7 @@ function PowerbuildingApp({ userId, onLogout }) {
   async function savePRs(newPrs) {
     setPrs(newPrs);
     await db_savePRs(userId, newPrs);
+    await db_logPRHistory(userId, cycleNum, newPrs);
     setFlash("PRs saved!");
     setTimeout(() => setFlash(null), 2000);
   }
