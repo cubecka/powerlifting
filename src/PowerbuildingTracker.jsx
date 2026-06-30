@@ -153,6 +153,23 @@ async function db_toggleSupplementLog(userId, supplementId, dateStr, isChecked) 
   }
 }
 
+// ── Nutrition (calories/macros) ──────────────────────────────────────────────
+async function db_loadNutrition(userId) {
+  const { data } = await supabase.from("nutrition_logs").select("*").eq("user_id", userId);
+  return data || []; // [{id, log_date, calories, carbs, fat, protein, fiber}]
+}
+
+async function db_saveNutrition(userId, dateStr, vals) {
+  await supabase.from("nutrition_logs").upsert(
+    { user_id: userId, log_date: dateStr, ...vals },
+    { onConflict: "user_id,log_date" }
+  );
+}
+
+async function db_deleteNutrition(userId, dateStr) {
+  await supabase.from("nutrition_logs").delete().eq("user_id", userId).eq("log_date", dateStr);
+}
+
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 const round2_5 = (kg) => Math.round(kg / 2.5) * 2.5;
 const calcKg = (pct, oneRM) => (oneRM > 0 ? round2_5(oneRM * pct / 100) : null);
@@ -1183,14 +1200,16 @@ function PowerbuildingApp({ userId, onLogout }) {
   const [flash, setFlash] = useState(null);
   const [supplements, setSupplements] = useState([]);   // active supplements list
   const [suppLogs, setSuppLogs] = useState([]);          // [{id, supplement_id, log_date}]
+  const [nutritionLogs, setNutritionLogs] = useState([]); // [{id, log_date, calories, carbs, fat, protein, fiber}]
 
   // Load everything from Supabase once on mount
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [data, suppData] = await Promise.all([
+      const [data, suppData, nutriData] = await Promise.all([
         db_loadAll(userId),
         db_loadSupplements(userId),
+        db_loadNutrition(userId),
       ]);
       if (cancelled) return;
       setPrs(data.prs);
@@ -1201,6 +1220,7 @@ function PowerbuildingApp({ userId, onLogout }) {
       setCycleNum(data.cycleNum);
       setSupplements(suppData.supplements);
       setSuppLogs(suppData.logs);
+      setNutritionLogs(nutriData);
       setLoading(false);
     })();
     return () => { cancelled = true; };
@@ -1286,7 +1306,8 @@ function PowerbuildingApp({ userId, onLogout }) {
 
   // ── CSV export ──────────────────────────────────────────────────────────────
   function exportCSV() {
-    if (!history.length && !bodyweights.length && !measurements.length) { setFlash("No data to export yet."); setTimeout(() => setFlash(null), 2000); return; }
+    const hasAnyData = history.length || bodyweights.length || measurements.length || suppLogs.length || nutritionLogs.length;
+    if (!hasAnyData) { setFlash("No data to export yet."); setTimeout(() => setFlash(null), 2000); return; }
     const header = ["Cycle","Date","Type","Exercise","Weight (kg)","Reps","RPE"];
     const dataRows = [];
     history.forEach(h => {
@@ -1305,6 +1326,22 @@ function PowerbuildingApp({ userId, onLogout }) {
       if (m.upperArm)   dataRows.push([c, d, "measurement", "Upper arm",   m.upperArm,   "", ""]);
       if (m.thighLeft)  dataRows.push([c, d, "measurement", "Thigh left",  m.thighLeft,  "", ""]);
       if (m.thighRight) dataRows.push([c, d, "measurement", "Thigh right", m.thighRight, "", ""]);
+    });
+    const suppNameById = {};
+    supplements.forEach(s => { suppNameById[s.id] = s.name; });
+    suppLogs.forEach(l => {
+      const [y,m,dd] = l.log_date.split("-").map(Number);
+      const d = new Date(y, m-1, dd).toLocaleDateString();
+      dataRows.push([cycleNum, d, "supplement", suppNameById[l.supplement_id] || "Unknown", "taken", "", ""]);
+    });
+    nutritionLogs.forEach(n => {
+      const [y,m,dd] = n.log_date.split("-").map(Number);
+      const d = new Date(y, m-1, dd).toLocaleDateString();
+      if (n.calories != null) dataRows.push([cycleNum, d, "nutrition", "Calories", n.calories, "", ""]);
+      if (n.carbs != null)    dataRows.push([cycleNum, d, "nutrition", "Carbs (g)", n.carbs, "", ""]);
+      if (n.fat != null)      dataRows.push([cycleNum, d, "nutrition", "Fat (g)", n.fat, "", ""]);
+      if (n.protein != null)  dataRows.push([cycleNum, d, "nutrition", "Protein (g)", n.protein, "", ""]);
+      if (n.fiber != null)    dataRows.push([cycleNum, d, "nutrition", "Fiber (g)", n.fiber, "", ""]);
     });
     dataRows.sort((a, b) => new Date(a[1]) - new Date(b[1]));
     const allRows = [header, ...dataRows];
@@ -1396,7 +1433,7 @@ function PowerbuildingApp({ userId, onLogout }) {
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 16px", borderBottom:"1px solid var(--b)", position:"sticky", top:0, background:"var(--bg)", zIndex:10 }}>
         <span style={{ fontSize:14, fontWeight:700, letterSpacing:".08em", textTransform:"uppercase", color:"var(--ac)" }}>PB</span>
         <div style={{ display:"flex", gap:2 }}>
-          {[["program","Program"],["setup","PRs"],["history","History"],["supps","Supps"],["settings","Settings"]].map(([id,label]) => (
+          {[["program","Program"],["setup","PRs"],["history","History"],["supps","Daily"],["settings","Settings"]].map(([id,label]) => (
             <button key={id} onClick={() => setTab(id)}
               style={{ padding:"7px 14px", background:"none", border:"none", borderBottom: tab===id ? "2px solid var(--ac)" : "2px solid transparent", color: tab===id ? "var(--tx)" : "var(--mu)", fontSize:13, cursor:"pointer", transition:"all .15s" }}>
               {label}
@@ -1560,6 +1597,7 @@ function PowerbuildingApp({ userId, onLogout }) {
             measurements={measurements}
             supplements={supplements}
             suppLogs={suppLogs}
+            nutritionLogs={nutritionLogs}
             onExport={exportCSV}
             cycleNum={cycleNum}
             onAddBodyweight={async (kg) => {
@@ -1599,6 +1637,7 @@ function PowerbuildingApp({ userId, onLogout }) {
           <SuppsView
             supplements={supplements}
             suppLogs={suppLogs}
+            nutritionLogs={nutritionLogs}
             onAdd={async (name) => {
               const row = await db_addSupplement(userId, name);
               if (row) setSupplements([...supplements, row]);
@@ -1614,6 +1653,16 @@ function PowerbuildingApp({ userId, onLogout }) {
               } else {
                 setSuppLogs(suppLogs.filter(l => !(l.supplement_id === supplementId && l.log_date === dateStr)));
               }
+            }}
+            onSaveNutrition={async (dateStr, vals) => {
+              await db_saveNutrition(userId, dateStr, vals);
+              const existing = nutritionLogs.find(n => n.log_date === dateStr);
+              const next = nutritionLogs.filter(n => n.log_date !== dateStr);
+              setNutritionLogs([...next, { id: existing?.id, log_date: dateStr, ...vals }]);
+            }}
+            onDeleteNutrition={async (dateStr) => {
+              await db_deleteNutrition(userId, dateStr);
+              setNutritionLogs(nutritionLogs.filter(n => n.log_date !== dateStr));
             }}
           />
         )}
@@ -1906,7 +1955,7 @@ function fmtDateKeyDisplay(key) {
   return new Date(y, m-1, d).toLocaleDateString(undefined, { weekday:"short", day:"numeric", month:"short", year:"numeric" });
 }
 
-function SuppsView({ supplements, suppLogs, onAdd, onRemove, onToggle }) {
+function SuppsView({ supplements, suppLogs, nutritionLogs, onAdd, onRemove, onToggle, onSaveNutrition, onDeleteNutrition }) {
   const [selectedDate, setSelectedDate] = useState(() => toDateKey(new Date()));
   const [newName, setNewName] = useState("");
   const [showManage, setShowManage] = useState(false);
@@ -1938,17 +1987,71 @@ function SuppsView({ supplements, suppLogs, onAdd, onRemove, onToggle }) {
 
   const checkedCount = activeSupplements.filter(s => isChecked(s.id)).length;
 
+  // Nutrition for the selected day
+  const nutritionToday = nutritionLogs.find(n => n.log_date === selectedDate);
+  const [calories, setCalories] = useState("");
+  const [carbs, setCarbs] = useState("");
+  const [fat, setFat] = useState("");
+  const [protein, setProtein] = useState("");
+  const [fiber, setFiber] = useState("");
+  const [nutriSaved, setNutriSaved] = useState(false);
+
+  // Sync form fields whenever the selected date or its data changes
+  useEffect(() => {
+    setCalories(nutritionToday?.calories ?? "");
+    setCarbs(nutritionToday?.carbs ?? "");
+    setFat(nutritionToday?.fat ?? "");
+    setProtein(nutritionToday?.protein ?? "");
+    setFiber(nutritionToday?.fiber ?? "");
+  }, [selectedDate, nutritionToday?.id]);
+
+  async function saveNutrition() {
+    const vals = {
+      calories: parseFloat(calories) || null,
+      carbs: parseFloat(carbs) || null,
+      fat: parseFloat(fat) || null,
+      protein: parseFloat(protein) || null,
+      fiber: parseFloat(fiber) || null,
+    };
+    if (!Object.values(vals).some(v => v !== null)) return;
+    await onSaveNutrition(selectedDate, vals);
+    setNutriSaved(true);
+    setTimeout(() => setNutriSaved(false), 2000);
+  }
+
+  async function clearNutrition() {
+    if (!window.confirm("Clear nutrition data for this day?")) return;
+    await onDeleteNutrition(selectedDate);
+  }
+
+  const nField = { width:"100%", background:"var(--s1)", border:"1px solid var(--b)", borderRadius:6, color:"var(--tx)", fontSize:15, fontWeight:600, padding:"7px 9px" };
+  const nLabel = { fontSize:11, textTransform:"uppercase", letterSpacing:".05em", color:"var(--mu)", display:"block", marginBottom:4 };
+
   return (
     <div>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-        <div style={{ fontSize:20, fontWeight:700 }}>Supplements</div>
+      <div style={{ fontSize:20, fontWeight:700, marginBottom:16 }}>Daily</div>
+
+      {/* Date navigator — shared between supplements and nutrition */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, padding:"10px 14px", marginBottom:16 }}>
+        <button onClick={() => shiftDate(-1)}
+          style={{ background:"var(--s1)", border:"1px solid var(--b)", borderRadius:6, color:"var(--tx)", fontSize:14, padding:"5px 12px", cursor:"pointer" }}>‹</button>
+        <div style={{ textAlign:"center" }}>
+          <div style={{ fontSize:13, fontWeight:600 }}>{isToday ? "Today" : fmtDateKeyDisplay(selectedDate)}</div>
+          {!isToday && <button onClick={() => setSelectedDate(todayKey)} style={{ fontSize:11, color:"var(--ac)", background:"none", border:"none", cursor:"pointer", padding:0, marginTop:2 }}>Jump to today</button>}
+        </div>
+        <button onClick={() => shiftDate(1)} disabled={isToday}
+          style={{ background:"var(--s1)", border:"1px solid var(--b)", borderRadius:6, color: isToday ? "var(--mu)" : "var(--tx)", fontSize:14, padding:"5px 12px", cursor: isToday ? "default" : "pointer", opacity: isToday ? 0.4 : 1 }}>›</button>
+      </div>
+
+      {/* ── SUPPLEMENTS ── */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+        <div style={{ fontSize:14, fontWeight:600, color:"var(--ac)" }}>💊 Supplements</div>
         <button onClick={() => setShowManage(s => !s)}
-          style={{ fontSize:12, padding:"6px 14px", background:"var(--s2)", border:"1px solid var(--b)", borderRadius:6, color:"var(--su)", cursor:"pointer" }}>
+          style={{ fontSize:12, padding:"5px 12px", background:"var(--s2)", border:"1px solid var(--b)", borderRadius:6, color:"var(--su)", cursor:"pointer" }}>
           {showManage ? "Done" : "Manage list"}
         </button>
       </div>
 
-      {/* Manage supplements list */}
       {showManage && (
         <div style={{ background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, padding:"14px 16px", marginBottom:16 }}>
           <div style={{ fontSize:13, fontWeight:600, marginBottom:10 }}>Your supplements</div>
@@ -1976,26 +2079,13 @@ function SuppsView({ supplements, suppLogs, onAdd, onRemove, onToggle }) {
         </div>
       )}
 
-      {/* Date navigator */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, padding:"10px 14px", marginBottom:16 }}>
-        <button onClick={() => shiftDate(-1)}
-          style={{ background:"var(--s1)", border:"1px solid var(--b)", borderRadius:6, color:"var(--tx)", fontSize:14, padding:"5px 12px", cursor:"pointer" }}>‹</button>
-        <div style={{ textAlign:"center" }}>
-          <div style={{ fontSize:13, fontWeight:600 }}>{isToday ? "Today" : fmtDateKeyDisplay(selectedDate)}</div>
-          {!isToday && <button onClick={() => setSelectedDate(todayKey)} style={{ fontSize:11, color:"var(--ac)", background:"none", border:"none", cursor:"pointer", padding:0, marginTop:2 }}>Jump to today</button>}
-        </div>
-        <button onClick={() => shiftDate(1)} disabled={isToday}
-          style={{ background:"var(--s1)", border:"1px solid var(--b)", borderRadius:6, color: isToday ? "var(--mu)" : "var(--tx)", fontSize:14, padding:"5px 12px", cursor: isToday ? "default" : "pointer", opacity: isToday ? 0.4 : 1 }}>›</button>
-      </div>
-
-      {/* Checklist for selected day */}
       {activeSupplements.length === 0 ? (
-        <div style={{ textAlign:"center", padding:"40px 0", color:"var(--su)" }}>
-          <div style={{ fontSize:15, marginBottom:6 }}>No supplements yet</div>
-          <div style={{ fontSize:13, color:"var(--mu)" }}>Tap "Manage list" above to add your first one.</div>
+        <div style={{ textAlign:"center", padding:"24px 0", color:"var(--su)", marginBottom:24 }}>
+          <div style={{ fontSize:14, marginBottom:4 }}>No supplements yet</div>
+          <div style={{ fontSize:12, color:"var(--mu)" }}>Tap "Manage list" above to add your first one.</div>
         </div>
       ) : (
-        <div style={{ background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, overflow:"hidden" }}>
+        <div style={{ background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, overflow:"hidden", marginBottom:8 }}>
           {activeSupplements.map((s, i) => {
             const checked = isChecked(s.id);
             return (
@@ -2015,16 +2105,55 @@ function SuppsView({ supplements, suppLogs, onAdd, onRemove, onToggle }) {
       )}
 
       {activeSupplements.length > 0 && (
-        <div style={{ fontSize:12, color:"var(--mu)", marginTop:10, textAlign:"center" }}>
+        <div style={{ fontSize:12, color:"var(--mu)", marginBottom:28, textAlign:"center" }}>
           {checkedCount} / {activeSupplements.length} taken {isToday ? "today" : "on this day"}
         </div>
       )}
+
+      {/* ── NUTRITION ── */}
+      <div style={{ fontSize:14, fontWeight:600, color:"var(--ac)", marginBottom:10 }}>🍽️ Calories & macros</div>
+      <div style={{ background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, padding:"14px 16px" }}>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(95px,1fr))", gap:10, marginBottom:14 }}>
+          <div>
+            <label style={nLabel}>Calories</label>
+            <input type="number" step="1" min="0" placeholder="—" value={calories} onChange={e=>setCalories(e.target.value)} style={nField} />
+          </div>
+          <div>
+            <label style={nLabel}>Carbs (g)</label>
+            <input type="number" step="1" min="0" placeholder="—" value={carbs} onChange={e=>setCarbs(e.target.value)} style={nField} />
+          </div>
+          <div>
+            <label style={nLabel}>Fat (g)</label>
+            <input type="number" step="1" min="0" placeholder="—" value={fat} onChange={e=>setFat(e.target.value)} style={nField} />
+          </div>
+          <div>
+            <label style={nLabel}>Protein (g)</label>
+            <input type="number" step="1" min="0" placeholder="—" value={protein} onChange={e=>setProtein(e.target.value)} style={nField} />
+          </div>
+          <div>
+            <label style={nLabel}>Fiber (g)</label>
+            <input type="number" step="1" min="0" placeholder="—" value={fiber} onChange={e=>setFiber(e.target.value)} style={nField} />
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          <button onClick={saveNutrition}
+            style={{ fontSize:13, padding:"7px 18px", background: nutriSaved ? "rgba(106,191,123,.15)" : "var(--ac)", border:"none", borderRadius:6, color: nutriSaved ? "var(--gr)" : "#000", cursor:"pointer", fontWeight:600 }}>
+            {nutriSaved ? "✓ Saved" : "Save"}
+          </button>
+          {nutritionToday && (
+            <button onClick={clearNutrition}
+              style={{ fontSize:13, padding:"7px 16px", background:"none", border:"1px solid var(--b)", borderRadius:6, color:"var(--mu)", cursor:"pointer" }}>
+              Clear day
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
 
 // ─── HISTORY ─────────────────────────────────────────────────────────────────
-function HistoryView({ history, bodyweights, measurements, supplements, suppLogs, onExport, cycleNum, onAddBodyweight, onDeleteWorkout, doneMap, onSetTrainingTime }) {
+function HistoryView({ history, bodyweights, measurements, supplements, suppLogs, nutritionLogs, onExport, cycleNum, onAddBodyweight, onDeleteWorkout, doneMap, onSetTrainingTime }) {
   const [expanded, setExpanded] = useState({});
   const [bwInput, setBwInput] = useState("");
 
@@ -2033,7 +2162,7 @@ function HistoryView({ history, bodyweights, measurements, supplements, suppLogs
   const byDate = {};
   history.forEach(h => {
     const d = new Date(h.date).toLocaleDateString();
-    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null, supps: [] };
+    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null, supps: [], nutrition: null };
     const wId = h.workoutId || "unknown";
     if (!byDate[d].workouts[wId]) byDate[d].workouts[wId] = { entries: [] };
     byDate[d].workouts[wId].entries.push(h);
@@ -2041,7 +2170,7 @@ function HistoryView({ history, bodyweights, measurements, supplements, suppLogs
   // One bodyweight entry per day (most recent)
   bodyweights.forEach(b => {
     const d = new Date(b.date).toLocaleDateString();
-    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null, supps: [] };
+    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null, supps: [], nutrition: null };
     if (!byDate[d].bw || new Date(b.date) > new Date(byDate[d].bw.date)) {
       byDate[d].bw = b;
     }
@@ -2049,7 +2178,7 @@ function HistoryView({ history, bodyweights, measurements, supplements, suppLogs
   // Measurements — only appear on days they were actually logged
   (measurements || []).forEach(m => {
     const d = new Date(m.date).toLocaleDateString();
-    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null, supps: [] };
+    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null, supps: [], nutrition: null };
     if (!byDate[d].meas || new Date(m.date) > new Date(byDate[d].meas.date)) {
       byDate[d].meas = m;
     }
@@ -2061,9 +2190,16 @@ function HistoryView({ history, bodyweights, measurements, supplements, suppLogs
   (suppLogs || []).forEach(l => {
     const [y, m, dd] = l.log_date.split("-").map(Number);
     const d = new Date(y, m - 1, dd).toLocaleDateString();
-    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null, supps: [] };
+    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null, supps: [], nutrition: null };
     const name = suppNameById[l.supplement_id] || "Unknown supplement";
     byDate[d].supps.push(name);
+  });
+  // Nutrition — log_date is YYYY-MM-DD, same conversion as supplements
+  (nutritionLogs || []).forEach(n => {
+    const [y, m, dd] = n.log_date.split("-").map(Number);
+    const d = new Date(y, m - 1, dd).toLocaleDateString();
+    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null, supps: [], nutrition: null };
+    byDate[d].nutrition = n;
   });
 
   const dates = Object.keys(byDate).sort((a,b) => new Date(b) - new Date(a));
@@ -2155,6 +2291,7 @@ function HistoryView({ history, bodyweights, measurements, supplements, suppLogs
                   {dayData.bw && <span style={{ fontSize:12, marginLeft:10, color:"var(--ac)" }}>⚖ {dayData.bw.kg} kg</span>}
                   {dayData.meas && <span style={{ fontSize:12, marginLeft:10, color:"var(--ac)" }}>📏 measured</span>}
                   {dayData.supps.length > 0 && <span style={{ fontSize:12, marginLeft:10, color:"var(--ac)" }}>💊 {dayData.supps.length}</span>}
+                  {dayData.nutrition && <span style={{ fontSize:12, marginLeft:10, color:"var(--ac)" }}>🍽️ {dayData.nutrition.calories ? `${dayData.nutrition.calories} kcal` : "logged"}</span>}
                 </div>
                 <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                   {workoutIds.length > 0 && <span style={{ fontSize:12, color:"var(--mu)" }}>{workoutIds.length} workout{workoutIds.length>1?"s":""} · {exNames.length} exercises</span>}
@@ -2259,6 +2396,20 @@ function HistoryView({ history, bodyweights, measurements, supplements, suppLogs
                       {dayData.supps.map((name, i) => (
                         <span key={i} style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--ac)" }}>{name}</span>
                       ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Nutrition */}
+                {dayData.nutrition && (
+                  <div style={{ borderTop: (workoutIds.length > 0 || dayData.bw || dayData.meas || dayData.supps.length > 0) ? "1px solid var(--b)" : "none", paddingTop: (workoutIds.length > 0 || dayData.bw || dayData.meas || dayData.supps.length > 0) ? 8 : 0, marginTop: (workoutIds.length > 0 || dayData.bw || dayData.meas || dayData.supps.length > 0) ? 8 : 0 }}>
+                    <div style={{ fontSize:12, color:"var(--su)", marginBottom:6 }}>🍽️ Calories & macros</div>
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                      {dayData.nutrition.calories != null && <span style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--su)" }}>Calories <strong style={{color:"var(--ac)"}}>{dayData.nutrition.calories}</strong></span>}
+                      {dayData.nutrition.carbs != null && <span style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--su)" }}>Carbs <strong style={{color:"var(--ac)"}}>{dayData.nutrition.carbs}</strong>g</span>}
+                      {dayData.nutrition.fat != null && <span style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--su)" }}>Fat <strong style={{color:"var(--ac)"}}>{dayData.nutrition.fat}</strong>g</span>}
+                      {dayData.nutrition.protein != null && <span style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--su)" }}>Protein <strong style={{color:"var(--ac)"}}>{dayData.nutrition.protein}</strong>g</span>}
+                      {dayData.nutrition.fiber != null && <span style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--su)" }}>Fiber <strong style={{color:"var(--ac)"}}>{dayData.nutrition.fiber}</strong>g</span>}
                     </div>
                   </div>
                 )}
