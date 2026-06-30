@@ -1,4 +1,114 @@
 import { useState, useEffect, useRef } from "react";
+import { supabase } from "./supabaseClient";
+
+// ─── SUPABASE DATA LAYER ───────────────────────────────────────────────────────
+// Thin wrapper functions — each mirrors what the old localStorage calls did,
+// but reads/writes Supabase tables scoped to the logged-in user.
+
+async function db_loadAll(userId) {
+  const [prsRes, histRes, bwRes, measRes, doneRes, settingsRes] = await Promise.all([
+    supabase.from("prs").select("*").eq("user_id", userId).maybeSingle(),
+    supabase.from("workout_logs").select("*").eq("user_id", userId).order("logged_at", { ascending: true }),
+    supabase.from("bodyweights").select("*").eq("user_id", userId).order("logged_at", { ascending: true }),
+    supabase.from("measurements").select("*").eq("user_id", userId).order("logged_at", { ascending: true }),
+    supabase.from("workout_completions").select("*").eq("user_id", userId),
+    supabase.from("app_settings").select("*").eq("user_id", userId).maybeSingle(),
+  ]);
+
+  const prs = prsRes.data
+    ? { squat: prsRes.data.squat, bench: prsRes.data.bench, deadlift: prsRes.data.deadlift, ohp: prsRes.data.ohp }
+    : { squat: 0, bench: 0, deadlift: 0, ohp: 0 };
+
+  const history = (histRes.data || []).map(r => ({
+    name: r.exercise_name, weight: r.weight, reps: r.reps, rpe: r.rpe,
+    date: r.logged_at, cycle: r.cycle, workoutId: r.workout_id, _id: r.id
+  }));
+
+  const bodyweights = (bwRes.data || []).map(r => ({
+    kg: r.kg, date: r.logged_at, cycle: r.cycle, _id: r.id
+  }));
+
+  const measurements = (measRes.data || []).map(r => ({
+    waist: r.waist, chest: r.chest, shoulders: r.shoulders, upperArm: r.upper_arm,
+    thighLeft: r.thigh_left, thighRight: r.thigh_right,
+    date: r.logged_at, cycle: r.cycle, _id: r.id
+  }));
+
+  const doneMap = {};
+  (doneRes.data || []).forEach(r => { doneMap[r.workout_id] = r.completed_at; });
+
+  const cycleNum = settingsRes.data ? settingsRes.data.current_cycle : 1;
+
+  return { prs, history, bodyweights, measurements, doneMap, cycleNum };
+}
+
+async function db_savePRs(userId, prs) {
+  await supabase.from("prs").upsert({ user_id: userId, ...prs, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+}
+
+async function db_insertWorkoutLogs(userId, entries) {
+  if (!entries.length) return;
+  const rows = entries.map(e => ({
+    user_id: userId, cycle: e.cycle, workout_id: e.workoutId,
+    exercise_name: e.name, weight: e.weight, reps: String(e.reps), rpe: e.rpe,
+    logged_at: e.date
+  }));
+  await supabase.from("workout_logs").insert(rows);
+}
+
+async function db_markCompleted(userId, cycle, workoutId, completedAt) {
+  await supabase.from("workout_completions").upsert(
+    { user_id: userId, cycle, workout_id: workoutId, completed_at: completedAt },
+    { onConflict: "user_id,cycle,workout_id" }
+  );
+}
+
+async function db_addBodyweight(userId, kg, cycle, dateISO, replaceTodayId) {
+  if (replaceTodayId) {
+    await supabase.from("bodyweights").update({ kg, logged_at: dateISO }).eq("id", replaceTodayId);
+  } else {
+    await supabase.from("bodyweights").insert({ user_id: userId, kg, cycle, logged_at: dateISO });
+  }
+}
+
+async function db_addMeasurement(userId, vals, cycle, dateISO, replaceTodayId) {
+  const row = {
+    waist: vals.waist, chest: vals.chest, shoulders: vals.shoulders,
+    upper_arm: vals.upperArm, thigh_left: vals.thighLeft, thigh_right: vals.thighRight,
+  };
+  if (replaceTodayId) {
+    await supabase.from("measurements").update({ ...row, logged_at: dateISO }).eq("id", replaceTodayId);
+  } else {
+    await supabase.from("measurements").insert({ user_id: userId, ...row, cycle, logged_at: dateISO });
+  }
+}
+
+async function db_deleteWorkout(userId, cycle, workoutId, dateStr) {
+  // Delete all workout_logs rows for this user/workout on that date
+  const { data } = await supabase.from("workout_logs").select("id, logged_at").eq("user_id", userId).eq("workout_id", workoutId);
+  const idsToDelete = (data || []).filter(r => new Date(r.logged_at).toLocaleDateString() === dateStr).map(r => r.id);
+  if (idsToDelete.length) await supabase.from("workout_logs").delete().in("id", idsToDelete);
+  // Also remove the completion marker
+  await supabase.from("workout_completions").delete().eq("user_id", userId).eq("workout_id", workoutId);
+}
+
+async function db_deleteBodyweightOnDate(userId, dateStr) {
+  const { data } = await supabase.from("bodyweights").select("id, logged_at").eq("user_id", userId);
+  const ids = (data || []).filter(r => new Date(r.logged_at).toLocaleDateString() === dateStr).map(r => r.id);
+  if (ids.length) await supabase.from("bodyweights").delete().in("id", ids);
+}
+
+async function db_saveCycle(userId, cycleNum) {
+  await supabase.from("app_settings").upsert(
+    { user_id: userId, current_cycle: cycleNum, updated_at: new Date().toISOString() },
+    { onConflict: "user_id" }
+  );
+}
+
+async function db_resetCycle(userId, nextCycle) {
+  await db_saveCycle(userId, nextCycle);
+  await supabase.from("workout_completions").delete().eq("user_id", userId);
+}
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 const round2_5 = (kg) => Math.round(kg / 2.5) * 2.5;
@@ -1013,35 +1123,53 @@ function SetsTable({ ex, warmupCount, totalSets, logKey, logData, onLog,
 }
 
 // ─── APP ROOT ─────────────────────────────────────────────────────────────────
-export default function App() {
+function PowerbuildingApp({ userId, onLogout }) {
   const [tab, setTab] = useState("program");
-  const [prs, setPrs] = useState(() => LS.get("pb_prs", { squat:0, bench:0, deadlift:0, ohp:0 }));
-  const [logs, setLogs] = useState(() => LS.get("pb_logs", {}));
-  const [history, setHistory] = useState(() => LS.get("pb_hist", []));
-  const [bodyweights, setBodyweights] = useState(() => LS.get("pb_bw", [])); // [{date, kg}]
-  const [measurements, setMeasurements] = useState(() => LS.get("pb_meas", [])); // [{date, waist, chest, shoulders, upperArm, thigh}]
+  const [loading, setLoading] = useState(true);
+  const [prs, setPrs] = useState({ squat:0, bench:0, deadlift:0, ohp:0 });
+  const [logs, setLogs] = useState(() => LS.get("pb_logs_draft", {})); // draft inputs only — stays local
+  const [history, setHistory] = useState([]);
+  const [bodyweights, setBodyweights] = useState([]);
+  const [measurements, setMeasurements] = useState([]);
   // doneMap: { [workoutId]: isoDateString } — marks which workouts are completed this cycle
-  const [doneMap, setDoneMap] = useState(() => LS.get("pb_done", {}));
-  const [cycleNum, setCycleNum] = useState(() => LS.get("pb_cycle", 1));
+  const [doneMap, setDoneMap] = useState({});
+  const [cycleNum, setCycleNum] = useState(1);
   const [showReset, setShowReset] = useState(false);  // first confirm
   const [showReset2, setShowReset2] = useState(false); // second confirm
   const [activeWorkout, setActiveWorkout] = useState(null);
   const [flash, setFlash] = useState(null);
 
+  // Load everything from Supabase once on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const data = await db_loadAll(userId);
+      if (cancelled) return;
+      setPrs(data.prs);
+      setHistory(data.history);
+      setBodyweights(data.bodyweights);
+      setMeasurements(data.measurements);
+      setDoneMap(data.doneMap);
+      setCycleNum(data.cycleNum);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [userId]);
+
   function handleLog(key, val) {
     const next = { ...logs, [key]: val };
     setLogs(next);
-    LS.set("pb_logs", next);
+    LS.set("pb_logs_draft", next); // draft only, never synced to Supabase
   }
 
-  function savePRs(newPrs) {
+  async function savePRs(newPrs) {
     setPrs(newPrs);
-    LS.set("pb_prs", newPrs);
+    await db_savePRs(userId, newPrs);
     setFlash("PRs saved!");
     setTimeout(() => setFlash(null), 2000);
   }
 
-  function saveWorkout(weekData, workout) {
+  async function saveWorkout(weekData, workout) {
     const now = new Date().toISOString();
     const wId = workout.id;
     const newEntries = [];
@@ -1094,13 +1222,14 @@ export default function App() {
         });
       }
     });
-    const next = [...history, ...newEntries];
-    setHistory(next);
-    LS.set("pb_hist", next);
-    // Mark this workout as done
-    const nextDone = { ...doneMap, [workout.id]: now };
-    setDoneMap(nextDone);
-    LS.set("pb_done", nextDone);
+
+    // Write to Supabase
+    await db_insertWorkoutLogs(userId, newEntries);
+    await db_markCompleted(userId, cycleNum, wId, now);
+
+    // Update local state
+    setHistory([...history, ...newEntries]);
+    setDoneMap({ ...doneMap, [wId]: now });
     setFlash("Workout saved! 💪");
     setTimeout(() => setFlash(null), 2500);
   }
@@ -1138,16 +1267,24 @@ export default function App() {
   }
 
   // ── New cycle (reset) ───────────────────────────────────────────────────────
-  function startNewCycle() {
+  async function startNewCycle() {
     // Export first (skips gracefully if no data)
     if (history.length || bodyweights.length) exportCSV();
-    // Write new cycle number and clear workout keys
     const next = cycleNum + 1;
-    LS.set("pb_cycle", next);
-    LS.set("pb_done", {});
-    LS.set("pb_logs", {});
+    await db_resetCycle(userId, next);
+    LS.set("pb_logs_draft", {});
     // Delay reload slightly so the download has time to start
     setTimeout(() => window.location.reload(), 800);
+  }
+
+  // ── Loading guard ──────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div style={{ minHeight:"100vh", background:"var(--bg)", color:"var(--tx)", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" }}>
+        <Styles />
+        <div style={{ fontSize:14, color:"var(--mu)" }}>Loading your data…</div>
+      </div>
+    );
   }
 
   // ── Active workout view ──────────────────────────────────────────────────────
@@ -1350,14 +1487,53 @@ export default function App() {
         {tab === "settings" && (
           <SettingsView
             cycleNum={cycleNum}
-            onCycleChange={n => { setCycleNum(n); LS.set("pb_cycle", n); }}
+            onCycleChange={async n => { setCycleNum(n); await db_saveCycle(userId, n); }}
             measurements={measurements}
-            setMeasurements={ms => { setMeasurements(ms); LS.set("pb_meas", ms); }}
+            onAddMeasurement={async (vals) => {
+              const today = new Date().toLocaleDateString();
+              const existing = measurements.find(m => new Date(m.date).toLocaleDateString() === today);
+              const nowISO = new Date().toISOString();
+              await db_addMeasurement(userId, vals, cycleNum, nowISO, existing?._id);
+              const entry = { date: nowISO, cycle: cycleNum, ...vals, _id: existing?._id };
+              const next = measurements.filter(m => new Date(m.date).toLocaleDateString() !== today);
+              setMeasurements([...next, entry]);
+            }}
+            onLogout={onLogout}
           />
         )}
 
         {/* ── HISTORY TAB ── */}
-        {tab === "history" && <HistoryView history={history} setHistory={next => { setHistory(next); LS.set("pb_hist", next); }} bodyweights={bodyweights} setBodyweights={bws => { setBodyweights(bws); LS.set("pb_bw", bws); }} measurements={measurements} onExport={exportCSV} cycleNum={cycleNum} />}
+        {tab === "history" && (
+          <HistoryView
+            history={history}
+            bodyweights={bodyweights}
+            measurements={measurements}
+            onExport={exportCSV}
+            cycleNum={cycleNum}
+            onAddBodyweight={async (kg) => {
+              const today = new Date().toLocaleDateString();
+              const existing = bodyweights.find(b => new Date(b.date).toLocaleDateString() === today);
+              const nowISO = new Date().toISOString();
+              await db_addBodyweight(userId, kg, cycleNum, nowISO, existing?._id);
+              const entry = { date: nowISO, kg, cycle: cycleNum, _id: existing?._id };
+              const next = bodyweights.filter(b => new Date(b.date).toLocaleDateString() !== today);
+              setBodyweights([...next, entry]);
+            }}
+            onDeleteWorkout={async (dateStr, wId) => {
+              await db_deleteWorkout(userId, cycleNum, wId, dateStr);
+              const nextHistory = history.filter(h => !(h.workoutId === wId && new Date(h.date).toLocaleDateString() === dateStr));
+              setHistory(nextHistory);
+              const otherWorkoutsOnDay = nextHistory.some(h => new Date(h.date).toLocaleDateString() === dateStr);
+              if (!otherWorkoutsOnDay) {
+                await db_deleteBodyweightOnDate(userId, dateStr);
+                setBodyweights(bodyweights.filter(b => new Date(b.date).toLocaleDateString() !== dateStr));
+              }
+              const nextDone = { ...doneMap };
+              delete nextDone[wId];
+              setDoneMap(nextDone);
+            }}
+          />
+        )}
       </div>
 
       {flash && <Flash msg={flash} />}
@@ -1406,7 +1582,7 @@ function PRSetup({ prs, onSave }) {
 }
 
 // ─── SETTINGS ─────────────────────────────────────────────────────────────────
-function SettingsView({ cycleNum, onCycleChange, measurements, setMeasurements }) {
+function SettingsView({ cycleNum, onCycleChange, measurements, onAddMeasurement, onLogout }) {
   const [localCycle, setLocalCycle] = useState(cycleNum);
   const [saved, setSaved] = useState(false);
 
@@ -1419,15 +1595,15 @@ function SettingsView({ cycleNum, onCycleChange, measurements, setMeasurements }
   const [mThighRight, setMThighRight] = useState("");
   const [mSaved, setMSaved] = useState(false);
 
-  function saveCycle() {
+  async function saveCycle() {
     const n = parseInt(localCycle);
     if (!n || n < 1) return;
-    onCycleChange(n);
+    await onCycleChange(n);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
 
-  function saveMeasurements() {
+  async function saveMeasurements() {
     const vals = {
       waist: parseFloat(mWaist) || null,
       chest: parseFloat(mChest) || null,
@@ -1438,11 +1614,7 @@ function SettingsView({ cycleNum, onCycleChange, measurements, setMeasurements }
     };
     // Need at least one value filled in
     if (!Object.values(vals).some(v => v !== null)) return;
-    const today = new Date().toLocaleDateString();
-    const entry = { date: new Date().toISOString(), cycle: cycleNum, ...vals };
-    // Overwrite today's entry if one exists (same logic as bodyweight)
-    const next = measurements.filter(m => new Date(m.date).toLocaleDateString() !== today);
-    setMeasurements([...next, entry]);
+    await onAddMeasurement(vals);
     setMWaist(""); setMChest(""); setMShoulders(""); setMUpperArm(""); setMThighLeft(""); setMThighRight("");
     setMSaved(true);
     setTimeout(() => setMSaved(false), 2000);
@@ -1532,12 +1704,21 @@ function SettingsView({ cycleNum, onCycleChange, measurements, setMeasurements }
           </div>
         )}
       </div>
+
+      {/* Account */}
+      <div style={{ background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, padding:"14px 16px", marginTop:12 }}>
+        <div style={{ fontSize:14, fontWeight:600, marginBottom:10 }}>Account</div>
+        <button onClick={onLogout}
+          style={{ fontSize:13, padding:"7px 18px", background:"var(--s1)", border:"1px solid var(--b)", borderRadius:6, color:"var(--su)", cursor:"pointer", fontWeight:500 }}>
+          Log out
+        </button>
+      </div>
     </div>
   );
 }
 
 // ─── HISTORY ─────────────────────────────────────────────────────────────────
-function HistoryView({ history, setHistory, bodyweights, setBodyweights, measurements, onExport, cycleNum }) {
+function HistoryView({ history, bodyweights, measurements, onExport, cycleNum, onAddBodyweight, onDeleteWorkout }) {
   const [expanded, setExpanded] = useState({});
   const [bwInput, setBwInput] = useState("");
 
@@ -1572,28 +1753,17 @@ function HistoryView({ history, setHistory, bodyweights, setBodyweights, measure
   function toggleDate(d) { setExpanded(e => ({ ...e, [d]: !e[d] })); }
 
   // Overwrite today's bodyweight entry (same day = replace)
-  function logBodyweight() {
+  async function logBodyweight() {
     const kg = parseFloat(bwInput);
     if (!kg || kg < 20 || kg > 300) return;
-    const today = new Date().toLocaleDateString();
-    const entry = { date: new Date().toISOString(), kg, cycle: cycleNum };
-    // Remove any existing entry for today, then add new one
-    const next = bodyweights.filter(b => new Date(b.date).toLocaleDateString() !== today);
-    setBodyweights([...next, entry]);
+    await onAddBodyweight(kg);
     setBwInput("");
   }
 
   // Delete all entries for a specific workoutId, and bodyweight for that day
   // if no other workouts remain on that day
-  function deleteWorkout(dateStr, wId) {
-    const nextHistory = history.filter(h => !(h.workoutId === wId && new Date(h.date).toLocaleDateString() === dateStr));
-    setHistory(nextHistory);
-    // Check if any other workouts remain on that day
-    const otherWorkoutsOnDay = nextHistory.some(h => new Date(h.date).toLocaleDateString() === dateStr);
-    if (!otherWorkoutsOnDay) {
-      // Remove bodyweight for that day too
-      setBodyweights(bodyweights.filter(b => new Date(b.date).toLocaleDateString() !== dateStr));
-    }
+  async function deleteWorkout(dateStr, wId) {
+    await onDeleteWorkout(dateStr, wId);
   }
 
   // Last two distinct-day bodyweight entries for diff display
@@ -1794,4 +1964,88 @@ function Styles() {
       }
     `}</style>
   );
+}
+
+// ─── LOGIN SCREEN ───────────────────────────────────────────────────────────
+function LoginScreen({ onLoggedIn }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function handleLogin(e) {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+    const { data, error: err } = await supabase.auth.signInWithPassword({ email, password });
+    setBusy(false);
+    if (err) {
+      setError(err.message === "Invalid login credentials" ? "Wrong email or password." : err.message);
+      return;
+    }
+    onLoggedIn(data.session);
+  }
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#0d0d0d", color:"#f0ede8", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif", padding:20 }}>
+      <style>{`
+        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+        input:focus{outline:none;border-color:#3a3a3a!important}
+      `}</style>
+      <form onSubmit={handleLogin} style={{ width:"100%", maxWidth:340, background:"#161616", border:"1px solid #2a2a2a", borderRadius:16, padding:"28px 24px" }}>
+        <div style={{ fontSize:13, fontWeight:700, letterSpacing:".1em", textTransform:"uppercase", color:"#e8c97e", marginBottom:4, textAlign:"center" }}>PB</div>
+        <div style={{ fontSize:18, fontWeight:600, marginBottom:20, textAlign:"center" }}>Sign in</div>
+
+        <label style={{ fontSize:11, textTransform:"uppercase", letterSpacing:".05em", color:"#5a5a5a", display:"block", marginBottom:5 }}>Email</label>
+        <input type="email" required autoFocus value={email} onChange={e=>setEmail(e.target.value)}
+          style={{ width:"100%", background:"#1d1d1d", border:"1px solid #2a2a2a", borderRadius:8, color:"#f0ede8", fontSize:15, padding:"10px 12px", marginBottom:14 }}
+        />
+
+        <label style={{ fontSize:11, textTransform:"uppercase", letterSpacing:".05em", color:"#5a5a5a", display:"block", marginBottom:5 }}>Password</label>
+        <input type="password" required value={password} onChange={e=>setPassword(e.target.value)}
+          style={{ width:"100%", background:"#1d1d1d", border:"1px solid #2a2a2a", borderRadius:8, color:"#f0ede8", fontSize:15, padding:"10px 12px", marginBottom:18 }}
+        />
+
+        {error && <div style={{ fontSize:13, color:"#e07070", marginBottom:14, lineHeight:1.4 }}>{error}</div>}
+
+        <button type="submit" disabled={busy}
+          style={{ width:"100%", background: busy ? "#3a3a3a" : "#e8c97e", color:"#000", border:"none", borderRadius:8, padding:"11px", fontSize:14, fontWeight:600, cursor: busy ? "default" : "pointer" }}>
+          {busy ? "Signing in…" : "Sign in"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// ─── ROOT EXPORT — handles auth session, then renders the app ──────────────
+export default function Root() {
+  const [session, setSession] = useState(undefined); // undefined = checking, null = logged out
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, sess) => {
+      setSession(sess);
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    setSession(null);
+  }
+
+  // Still checking session on first load
+  if (session === undefined) {
+    return (
+      <div style={{ minHeight:"100vh", background:"#0d0d0d", display:"flex", alignItems:"center", justifyContent:"center" }}>
+        <span style={{ color:"#5a5a5a", fontSize:14, fontFamily:"-apple-system,sans-serif" }}>Loading…</span>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <LoginScreen onLoggedIn={setSession} />;
+  }
+
+  return <PowerbuildingApp userId={session.user.id} onLogout={handleLogout} />;
 }
