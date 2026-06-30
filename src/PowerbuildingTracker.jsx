@@ -1558,6 +1558,8 @@ function PowerbuildingApp({ userId, onLogout }) {
             history={history}
             bodyweights={bodyweights}
             measurements={measurements}
+            supplements={supplements}
+            suppLogs={suppLogs}
             onExport={exportCSV}
             cycleNum={cycleNum}
             onAddBodyweight={async (kg) => {
@@ -1603,7 +1605,7 @@ function PowerbuildingApp({ userId, onLogout }) {
             }}
             onRemove={async (id) => {
               await db_deactivateSupplement(userId, id);
-              setSupplements(supplements.filter(s => s.id !== id));
+              setSupplements(supplements.map(s => s.id === id ? { ...s, active: false } : s));
             }}
             onToggle={async (supplementId, dateStr, isChecked) => {
               await db_toggleSupplementLog(userId, supplementId, dateStr, isChecked);
@@ -1909,6 +1911,10 @@ function SuppsView({ supplements, suppLogs, onAdd, onRemove, onToggle }) {
   const [newName, setNewName] = useState("");
   const [showManage, setShowManage] = useState(false);
 
+  // Only show active supplements in this view — inactive ones stay in the
+  // full list (passed to HistoryView) purely so past logs can show their name.
+  const activeSupplements = supplements.filter(s => s.active !== false);
+
   const todayKey = toDateKey(new Date());
   const isToday = selectedDate === todayKey;
 
@@ -1930,7 +1936,7 @@ function SuppsView({ supplements, suppLogs, onAdd, onRemove, onToggle }) {
     setNewName("");
   }
 
-  const checkedCount = supplements.filter(s => isChecked(s.id)).length;
+  const checkedCount = activeSupplements.filter(s => isChecked(s.id)).length;
 
   return (
     <div>
@@ -1946,8 +1952,8 @@ function SuppsView({ supplements, suppLogs, onAdd, onRemove, onToggle }) {
       {showManage && (
         <div style={{ background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, padding:"14px 16px", marginBottom:16 }}>
           <div style={{ fontSize:13, fontWeight:600, marginBottom:10 }}>Your supplements</div>
-          {supplements.length === 0 && <div style={{ fontSize:13, color:"var(--mu)", marginBottom:10 }}>No supplements added yet.</div>}
-          {supplements.map(s => (
+          {activeSupplements.length === 0 && <div style={{ fontSize:13, color:"var(--mu)", marginBottom:10 }}>No supplements added yet.</div>}
+          {activeSupplements.map(s => (
             <div key={s.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 0", borderBottom:"1px solid var(--b)" }}>
               <span style={{ fontSize:14 }}>{s.name}</span>
               <button onClick={() => { if (window.confirm(`Remove "${s.name}" from your list? Past history stays intact.`)) onRemove(s.id); }}
@@ -1983,18 +1989,18 @@ function SuppsView({ supplements, suppLogs, onAdd, onRemove, onToggle }) {
       </div>
 
       {/* Checklist for selected day */}
-      {supplements.length === 0 ? (
+      {activeSupplements.length === 0 ? (
         <div style={{ textAlign:"center", padding:"40px 0", color:"var(--su)" }}>
           <div style={{ fontSize:15, marginBottom:6 }}>No supplements yet</div>
           <div style={{ fontSize:13, color:"var(--mu)" }}>Tap "Manage list" above to add your first one.</div>
         </div>
       ) : (
         <div style={{ background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, overflow:"hidden" }}>
-          {supplements.map((s, i) => {
+          {activeSupplements.map((s, i) => {
             const checked = isChecked(s.id);
             return (
               <button key={s.id} onClick={() => onToggle(s.id, selectedDate, !checked)}
-                style={{ display:"flex", alignItems:"center", justifyContent:"space-between", width:"100%", padding:"13px 16px", background:"none", border:"none", borderBottom: i < supplements.length-1 ? "1px solid var(--b)" : "none", cursor:"pointer", textAlign:"left" }}>
+                style={{ display:"flex", alignItems:"center", justifyContent:"space-between", width:"100%", padding:"13px 16px", background:"none", border:"none", borderBottom: i < activeSupplements.length-1 ? "1px solid var(--b)" : "none", cursor:"pointer", textAlign:"left" }}>
                 <span style={{ fontSize:14, color: checked ? "var(--tx)" : "var(--su)" }}>{s.name}</span>
                 <span style={{
                   width:22, height:22, borderRadius:6, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0,
@@ -2008,9 +2014,9 @@ function SuppsView({ supplements, suppLogs, onAdd, onRemove, onToggle }) {
         </div>
       )}
 
-      {supplements.length > 0 && (
+      {activeSupplements.length > 0 && (
         <div style={{ fontSize:12, color:"var(--mu)", marginTop:10, textAlign:"center" }}>
-          {checkedCount} / {supplements.length} taken {isToday ? "today" : "on this day"}
+          {checkedCount} / {activeSupplements.length} taken {isToday ? "today" : "on this day"}
         </div>
       )}
     </div>
@@ -2018,7 +2024,7 @@ function SuppsView({ supplements, suppLogs, onAdd, onRemove, onToggle }) {
 }
 
 // ─── HISTORY ─────────────────────────────────────────────────────────────────
-function HistoryView({ history, bodyweights, measurements, onExport, cycleNum, onAddBodyweight, onDeleteWorkout, doneMap, onSetTrainingTime }) {
+function HistoryView({ history, bodyweights, measurements, supplements, suppLogs, onExport, cycleNum, onAddBodyweight, onDeleteWorkout, doneMap, onSetTrainingTime }) {
   const [expanded, setExpanded] = useState({});
   const [bwInput, setBwInput] = useState("");
 
@@ -2027,7 +2033,7 @@ function HistoryView({ history, bodyweights, measurements, onExport, cycleNum, o
   const byDate = {};
   history.forEach(h => {
     const d = new Date(h.date).toLocaleDateString();
-    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null };
+    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null, supps: [] };
     const wId = h.workoutId || "unknown";
     if (!byDate[d].workouts[wId]) byDate[d].workouts[wId] = { entries: [] };
     byDate[d].workouts[wId].entries.push(h);
@@ -2035,7 +2041,7 @@ function HistoryView({ history, bodyweights, measurements, onExport, cycleNum, o
   // One bodyweight entry per day (most recent)
   bodyweights.forEach(b => {
     const d = new Date(b.date).toLocaleDateString();
-    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null };
+    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null, supps: [] };
     if (!byDate[d].bw || new Date(b.date) > new Date(byDate[d].bw.date)) {
       byDate[d].bw = b;
     }
@@ -2043,10 +2049,21 @@ function HistoryView({ history, bodyweights, measurements, onExport, cycleNum, o
   // Measurements — only appear on days they were actually logged
   (measurements || []).forEach(m => {
     const d = new Date(m.date).toLocaleDateString();
-    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null };
+    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null, supps: [] };
     if (!byDate[d].meas || new Date(m.date) > new Date(byDate[d].meas.date)) {
       byDate[d].meas = m;
     }
+  });
+  // Supplements taken — log_date is YYYY-MM-DD, convert to the same
+  // toLocaleDateString() key used everywhere else in this grouping.
+  const suppNameById = {};
+  (supplements || []).forEach(s => { suppNameById[s.id] = s.name; });
+  (suppLogs || []).forEach(l => {
+    const [y, m, dd] = l.log_date.split("-").map(Number);
+    const d = new Date(y, m - 1, dd).toLocaleDateString();
+    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null, supps: [] };
+    const name = suppNameById[l.supplement_id] || "Unknown supplement";
+    byDate[d].supps.push(name);
   });
 
   const dates = Object.keys(byDate).sort((a,b) => new Date(b) - new Date(a));
@@ -2137,6 +2154,7 @@ function HistoryView({ history, bodyweights, measurements, onExport, cycleNum, o
                   {cycle && <span style={{ fontSize:11, marginLeft:8, color:"var(--mu)" }}>cycle {cycle}</span>}
                   {dayData.bw && <span style={{ fontSize:12, marginLeft:10, color:"var(--ac)" }}>⚖ {dayData.bw.kg} kg</span>}
                   {dayData.meas && <span style={{ fontSize:12, marginLeft:10, color:"var(--ac)" }}>📏 measured</span>}
+                  {dayData.supps.length > 0 && <span style={{ fontSize:12, marginLeft:10, color:"var(--ac)" }}>💊 {dayData.supps.length}</span>}
                 </div>
                 <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                   {workoutIds.length > 0 && <span style={{ fontSize:12, color:"var(--mu)" }}>{workoutIds.length} workout{workoutIds.length>1?"s":""} · {exNames.length} exercises</span>}
@@ -2229,6 +2247,18 @@ function HistoryView({ history, bodyweights, measurements, onExport, cycleNum, o
                       {dayData.meas.upperArm && <span style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--su)" }}>Upper arm <strong style={{color:"var(--ac)"}}>{dayData.meas.upperArm}</strong>cm</span>}
                       {dayData.meas.thighLeft && <span style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--su)" }}>Thigh L <strong style={{color:"var(--ac)"}}>{dayData.meas.thighLeft}</strong>cm</span>}
                       {dayData.meas.thighRight && <span style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--su)" }}>Thigh R <strong style={{color:"var(--ac)"}}>{dayData.meas.thighRight}</strong>cm</span>}
+                    </div>
+                  </div>
+                )}
+
+                {/* Supplements taken */}
+                {dayData.supps.length > 0 && (
+                  <div style={{ borderTop: (workoutIds.length > 0 || dayData.bw || dayData.meas) ? "1px solid var(--b)" : "none", paddingTop: (workoutIds.length > 0 || dayData.bw || dayData.meas) ? 8 : 0, marginTop: (workoutIds.length > 0 || dayData.bw || dayData.meas) ? 8 : 0 }}>
+                    <div style={{ fontSize:12, color:"var(--su)", marginBottom:6 }}>💊 Supplements taken</div>
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                      {dayData.supps.map((name, i) => (
+                        <span key={i} style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--ac)" }}>{name}</span>
+                      ))}
                     </div>
                   </div>
                 )}
