@@ -1019,6 +1019,7 @@ export default function App() {
   const [logs, setLogs] = useState(() => LS.get("pb_logs", {}));
   const [history, setHistory] = useState(() => LS.get("pb_hist", []));
   const [bodyweights, setBodyweights] = useState(() => LS.get("pb_bw", [])); // [{date, kg}]
+  const [measurements, setMeasurements] = useState(() => LS.get("pb_meas", [])); // [{date, waist, chest, shoulders, upperArm, thigh}]
   // doneMap: { [workoutId]: isoDateString } — marks which workouts are completed this cycle
   const [doneMap, setDoneMap] = useState(() => LS.get("pb_done", {}));
   const [cycleNum, setCycleNum] = useState(() => LS.get("pb_cycle", 1));
@@ -1106,7 +1107,7 @@ export default function App() {
 
   // ── CSV export ──────────────────────────────────────────────────────────────
   function exportCSV() {
-    if (!history.length && !bodyweights.length) { setFlash("No data to export yet."); setTimeout(() => setFlash(null), 2000); return; }
+    if (!history.length && !bodyweights.length && !measurements.length) { setFlash("No data to export yet."); setTimeout(() => setFlash(null), 2000); return; }
     const header = ["Cycle","Date","Type","Exercise","Weight (kg)","Reps","RPE"];
     const dataRows = [];
     history.forEach(h => {
@@ -1115,6 +1116,16 @@ export default function App() {
     });
     bodyweights.forEach(b => {
       dataRows.push([b.cycle ?? cycleNum, new Date(b.date).toLocaleDateString(), "bodyweight", "Morning weight", b.kg, "", ""]);
+    });
+    measurements.forEach(m => {
+      const d = new Date(m.date).toLocaleDateString();
+      const c = m.cycle ?? cycleNum;
+      if (m.waist)     dataRows.push([c, d, "measurement", "Waist",     m.waist,     "", ""]);
+      if (m.chest)      dataRows.push([c, d, "measurement", "Chest",     m.chest,     "", ""]);
+      if (m.shoulders)  dataRows.push([c, d, "measurement", "Shoulders", m.shoulders, "", ""]);
+      if (m.upperArm)   dataRows.push([c, d, "measurement", "Upper arm",   m.upperArm,   "", ""]);
+      if (m.thighLeft)  dataRows.push([c, d, "measurement", "Thigh left",  m.thighLeft,  "", ""]);
+      if (m.thighRight) dataRows.push([c, d, "measurement", "Thigh right", m.thighRight, "", ""]);
     });
     dataRows.sort((a, b) => new Date(a[1]) - new Date(b[1]));
     const allRows = [header, ...dataRows];
@@ -1340,11 +1351,13 @@ export default function App() {
           <SettingsView
             cycleNum={cycleNum}
             onCycleChange={n => { setCycleNum(n); LS.set("pb_cycle", n); }}
+            measurements={measurements}
+            setMeasurements={ms => { setMeasurements(ms); LS.set("pb_meas", ms); }}
           />
         )}
 
         {/* ── HISTORY TAB ── */}
-        {tab === "history" && <HistoryView history={history} setHistory={next => { setHistory(next); LS.set("pb_hist", next); }} bodyweights={bodyweights} setBodyweights={bws => { setBodyweights(bws); LS.set("pb_bw", bws); }} onExport={exportCSV} cycleNum={cycleNum} />}
+        {tab === "history" && <HistoryView history={history} setHistory={next => { setHistory(next); LS.set("pb_hist", next); }} bodyweights={bodyweights} setBodyweights={bws => { setBodyweights(bws); LS.set("pb_bw", bws); }} measurements={measurements} onExport={exportCSV} cycleNum={cycleNum} />}
       </div>
 
       {flash && <Flash msg={flash} />}
@@ -1393,9 +1406,18 @@ function PRSetup({ prs, onSave }) {
 }
 
 // ─── SETTINGS ─────────────────────────────────────────────────────────────────
-function SettingsView({ cycleNum, onCycleChange }) {
+function SettingsView({ cycleNum, onCycleChange, measurements, setMeasurements }) {
   const [localCycle, setLocalCycle] = useState(cycleNum);
   const [saved, setSaved] = useState(false);
+
+  // Measurement form fields
+  const [mWaist, setMWaist] = useState("");
+  const [mChest, setMChest] = useState("");
+  const [mShoulders, setMShoulders] = useState("");
+  const [mUpperArm, setMUpperArm] = useState("");
+  const [mThighLeft, setMThighLeft] = useState("");
+  const [mThighRight, setMThighRight] = useState("");
+  const [mSaved, setMSaved] = useState(false);
 
   function saveCycle() {
     const n = parseInt(localCycle);
@@ -1404,6 +1426,34 @@ function SettingsView({ cycleNum, onCycleChange }) {
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
+
+  function saveMeasurements() {
+    const vals = {
+      waist: parseFloat(mWaist) || null,
+      chest: parseFloat(mChest) || null,
+      shoulders: parseFloat(mShoulders) || null,
+      upperArm: parseFloat(mUpperArm) || null,
+      thighLeft: parseFloat(mThighLeft) || null,
+      thighRight: parseFloat(mThighRight) || null,
+    };
+    // Need at least one value filled in
+    if (!Object.values(vals).some(v => v !== null)) return;
+    const today = new Date().toLocaleDateString();
+    const entry = { date: new Date().toISOString(), cycle: cycleNum, ...vals };
+    // Overwrite today's entry if one exists (same logic as bodyweight)
+    const next = measurements.filter(m => new Date(m.date).toLocaleDateString() !== today);
+    setMeasurements([...next, entry]);
+    setMWaist(""); setMChest(""); setMShoulders(""); setMUpperArm(""); setMThighLeft(""); setMThighRight("");
+    setMSaved(true);
+    setTimeout(() => setMSaved(false), 2000);
+  }
+
+  const lastMeasurement = measurements.length
+    ? [...measurements].sort((a,b) => new Date(b.date)-new Date(a.date))[0]
+    : null;
+
+  const fieldStyle = { width:"100%", background:"var(--s1)", border:"1px solid var(--b)", borderRadius:6, color:"var(--tx)", fontSize:15, fontWeight:600, padding:"7px 9px" };
+  const labelStyle = { fontSize:11, textTransform:"uppercase", letterSpacing:".05em", color:"var(--mu)", display:"block", marginBottom:4 };
 
   return (
     <div>
@@ -1421,26 +1471,82 @@ function SettingsView({ cycleNum, onCycleChange }) {
             style={{ width:72, background:"var(--s1)", border:"1px solid var(--b)", borderRadius:6, color:"var(--tx)", fontSize:18, fontWeight:600, padding:"7px 10px" }}
           />
           <button onClick={saveCycle}
-            style={{ fontSize:13, padding:"7px 18px", background: saved ? "var(--green-dim, rgba(106,191,123,.15))" : "var(--s1)", border:"1px solid var(--b)", borderRadius:6, color: saved ? "var(--gr)" : "var(--tx)", cursor:"pointer", fontWeight:500, transition:"all .15s" }}>
+            style={{ fontSize:13, padding:"7px 18px", background: saved ? "rgba(106,191,123,.15)" : "var(--s1)", border:"1px solid var(--b)", borderRadius:6, color: saved ? "var(--gr)" : "var(--tx)", cursor:"pointer", fontWeight:500, transition:"all .15s" }}>
             {saved ? "✓ Saved" : "Update"}
           </button>
         </div>
+      </div>
+
+      {/* Body measurements */}
+      <div style={{ background:"var(--s2)", border:"1px solid var(--b)", borderRadius:12, padding:"14px 16px" }}>
+        <div style={{ fontSize:14, fontWeight:600, marginBottom:4 }}>Progress measurements</div>
+        <div style={{ fontSize:13, color:"var(--su)", marginBottom:14, lineHeight:1.5 }}>
+          Take these relaxed, ideally once a month at the same time of day. Leave a field blank to skip it — only filled-in values are saved. Logging again today overwrites today's entry.
+        </div>
+
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))", gap:10, marginBottom:12 }}>
+          <div>
+            <label style={labelStyle}>Waist (cm)</label>
+            <input type="number" step="0.5" min="0" placeholder="—" value={mWaist} onChange={e=>setMWaist(e.target.value)} style={fieldStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Chest (cm)</label>
+            <input type="number" step="0.5" min="0" placeholder="—" value={mChest} onChange={e=>setMChest(e.target.value)} style={fieldStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Shoulders (cm)</label>
+            <input type="number" step="0.5" min="0" placeholder="—" value={mShoulders} onChange={e=>setMShoulders(e.target.value)} style={fieldStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Upper arm (cm)</label>
+            <input type="number" step="0.5" min="0" placeholder="—" value={mUpperArm} onChange={e=>setMUpperArm(e.target.value)} style={fieldStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Thigh left (cm)</label>
+            <input type="number" step="0.5" min="0" placeholder="—" value={mThighLeft} onChange={e=>setMThighLeft(e.target.value)} style={fieldStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Thigh right (cm)</label>
+            <input type="number" step="0.5" min="0" placeholder="—" value={mThighRight} onChange={e=>setMThighRight(e.target.value)} style={fieldStyle} />
+          </div>
+        </div>
+
+        <button onClick={saveMeasurements}
+          style={{ fontSize:13, padding:"7px 18px", background: mSaved ? "rgba(106,191,123,.15)" : "var(--ac)", border:"none", borderRadius:6, color: mSaved ? "var(--gr)" : "#000", cursor:"pointer", fontWeight:600 }}>
+          {mSaved ? "✓ Saved" : "Log measurements"}
+        </button>
+
+        {lastMeasurement && (
+          <div style={{ marginTop:14, paddingTop:12, borderTop:"1px solid var(--b)" }}>
+            <div style={{ fontSize:11, color:"var(--mu)", marginBottom:6 }}>
+              Last logged — {new Date(lastMeasurement.date).toLocaleDateString()}
+            </div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+              {lastMeasurement.waist && <span style={{ fontSize:12, background:"var(--s1)", border:"1px solid var(--b)", borderRadius:20, padding:"3px 10px", color:"var(--su)" }}>Waist <strong style={{color:"var(--ac)"}}>{lastMeasurement.waist}</strong> cm</span>}
+              {lastMeasurement.chest && <span style={{ fontSize:12, background:"var(--s1)", border:"1px solid var(--b)", borderRadius:20, padding:"3px 10px", color:"var(--su)" }}>Chest <strong style={{color:"var(--ac)"}}>{lastMeasurement.chest}</strong> cm</span>}
+              {lastMeasurement.shoulders && <span style={{ fontSize:12, background:"var(--s1)", border:"1px solid var(--b)", borderRadius:20, padding:"3px 10px", color:"var(--su)" }}>Shoulders <strong style={{color:"var(--ac)"}}>{lastMeasurement.shoulders}</strong> cm</span>}
+              {lastMeasurement.upperArm && <span style={{ fontSize:12, background:"var(--s1)", border:"1px solid var(--b)", borderRadius:20, padding:"3px 10px", color:"var(--su)" }}>Upper arm <strong style={{color:"var(--ac)"}}>{lastMeasurement.upperArm}</strong> cm</span>}
+              {lastMeasurement.thighLeft && <span style={{ fontSize:12, background:"var(--s1)", border:"1px solid var(--b)", borderRadius:20, padding:"3px 10px", color:"var(--su)" }}>Thigh L <strong style={{color:"var(--ac)"}}>{lastMeasurement.thighLeft}</strong> cm</span>}
+              {lastMeasurement.thighRight && <span style={{ fontSize:12, background:"var(--s1)", border:"1px solid var(--b)", borderRadius:20, padding:"3px 10px", color:"var(--su)" }}>Thigh R <strong style={{color:"var(--ac)"}}>{lastMeasurement.thighRight}</strong> cm</span>}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
 // ─── HISTORY ─────────────────────────────────────────────────────────────────
-function HistoryView({ history, setHistory, bodyweights, setBodyweights, onExport, cycleNum }) {
+function HistoryView({ history, setHistory, bodyweights, setBodyweights, measurements, onExport, cycleNum }) {
   const [expanded, setExpanded] = useState({});
   const [bwInput, setBwInput] = useState("");
 
   // Group exercise history by date → by workoutId (so two workouts same day stay separate)
-  // Structure: byDate[dateStr] = { workouts: { [wId]: {label, entries[]} }, bw: entry|null }
+  // Structure: byDate[dateStr] = { workouts: { [wId]: {label, entries[]} }, bw: entry|null, meas: entry|null }
   const byDate = {};
   history.forEach(h => {
     const d = new Date(h.date).toLocaleDateString();
-    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null };
+    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null };
     const wId = h.workoutId || "unknown";
     if (!byDate[d].workouts[wId]) byDate[d].workouts[wId] = { entries: [] };
     byDate[d].workouts[wId].entries.push(h);
@@ -1448,10 +1554,17 @@ function HistoryView({ history, setHistory, bodyweights, setBodyweights, onExpor
   // One bodyweight entry per day (most recent)
   bodyweights.forEach(b => {
     const d = new Date(b.date).toLocaleDateString();
-    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null };
-    // Keep most recent entry for the day
+    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null };
     if (!byDate[d].bw || new Date(b.date) > new Date(byDate[d].bw.date)) {
       byDate[d].bw = b;
+    }
+  });
+  // Measurements — only appear on days they were actually logged
+  (measurements || []).forEach(m => {
+    const d = new Date(m.date).toLocaleDateString();
+    if (!byDate[d]) byDate[d] = { workouts: {}, bw: null, meas: null };
+    if (!byDate[d].meas || new Date(m.date) > new Date(byDate[d].meas.date)) {
+      byDate[d].meas = m;
     }
   });
 
@@ -1473,17 +1586,15 @@ function HistoryView({ history, setHistory, bodyweights, setBodyweights, onExpor
   // Delete all entries for a specific workoutId, and bodyweight for that day
   // if no other workouts remain on that day
   function deleteWorkout(dateStr, wId) {
-  const nextHistory = history.filter(h => {
-    const hDate = new Date(h.date).toLocaleDateString();
-    const hWid = h.workoutId || "unknown";
-    return !(hWid === wId && hDate === dateStr);
-  });
-  setHistory(nextHistory);
-  const otherWorkoutsOnDay = nextHistory.some(h => new Date(h.date).toLocaleDateString() === dateStr);
-  if (!otherWorkoutsOnDay) {
-    setBodyweights(bodyweights.filter(b => new Date(b.date).toLocaleDateString() !== dateStr));
+    const nextHistory = history.filter(h => !(h.workoutId === wId && new Date(h.date).toLocaleDateString() === dateStr));
+    setHistory(nextHistory);
+    // Check if any other workouts remain on that day
+    const otherWorkoutsOnDay = nextHistory.some(h => new Date(h.date).toLocaleDateString() === dateStr);
+    if (!otherWorkoutsOnDay) {
+      // Remove bodyweight for that day too
+      setBodyweights(bodyweights.filter(b => new Date(b.date).toLocaleDateString() !== dateStr));
+    }
   }
-}
 
   // Last two distinct-day bodyweight entries for diff display
   const sortedBws = [...bodyweights].sort((a,b) => new Date(b.date)-new Date(a.date));
@@ -1555,6 +1666,7 @@ function HistoryView({ history, setHistory, bodyweights, setBodyweights, onExpor
                   <span style={{ fontSize:14, fontWeight:600, color:"var(--tx)" }}>{d}</span>
                   {cycle && <span style={{ fontSize:11, marginLeft:8, color:"var(--mu)" }}>cycle {cycle}</span>}
                   {dayData.bw && <span style={{ fontSize:12, marginLeft:10, color:"var(--ac)" }}>⚖ {dayData.bw.kg} kg</span>}
+                  {dayData.meas && <span style={{ fontSize:12, marginLeft:10, color:"var(--ac)" }}>📏 measured</span>}
                 </div>
                 <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                   {workoutIds.length > 0 && <span style={{ fontSize:12, color:"var(--mu)" }}>{workoutIds.length} workout{workoutIds.length>1?"s":""} · {exNames.length} exercises</span>}
@@ -1625,6 +1737,21 @@ function HistoryView({ history, setHistory, bodyweights, setBodyweights, onExpor
                   <div style={{ borderTop: workoutIds.length > 0 ? "1px solid var(--b)" : "none", paddingTop: workoutIds.length > 0 ? 8 : 0, marginTop: workoutIds.length > 0 ? 4 : 0, fontSize:12, color:"var(--su)", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                     <span>⚖ Morning weight</span>
                     <span style={{ color:"var(--ac)", fontWeight:600 }}>{dayData.bw.kg} kg</span>
+                  </div>
+                )}
+
+                {/* Measurements */}
+                {dayData.meas && (
+                  <div style={{ borderTop: (workoutIds.length > 0 || dayData.bw) ? "1px solid var(--b)" : "none", paddingTop: (workoutIds.length > 0 || dayData.bw) ? 8 : 0, marginTop: (workoutIds.length > 0 || dayData.bw) ? 8 : 0 }}>
+                    <div style={{ fontSize:12, color:"var(--su)", marginBottom:6 }}>📏 Progress measurements</div>
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                      {dayData.meas.waist && <span style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--su)" }}>Waist <strong style={{color:"var(--ac)"}}>{dayData.meas.waist}</strong>cm</span>}
+                      {dayData.meas.chest && <span style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--su)" }}>Chest <strong style={{color:"var(--ac)"}}>{dayData.meas.chest}</strong>cm</span>}
+                      {dayData.meas.shoulders && <span style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--su)" }}>Shoulders <strong style={{color:"var(--ac)"}}>{dayData.meas.shoulders}</strong>cm</span>}
+                      {dayData.meas.upperArm && <span style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--su)" }}>Upper arm <strong style={{color:"var(--ac)"}}>{dayData.meas.upperArm}</strong>cm</span>}
+                      {dayData.meas.thighLeft && <span style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--su)" }}>Thigh L <strong style={{color:"var(--ac)"}}>{dayData.meas.thighLeft}</strong>cm</span>}
+                      {dayData.meas.thighRight && <span style={{ fontSize:11, background:"var(--s2)", border:"1px solid var(--b)", borderRadius:20, padding:"2px 9px", color:"var(--su)" }}>Thigh R <strong style={{color:"var(--ac)"}}>{dayData.meas.thighRight}</strong>cm</span>}
+                    </div>
                   </div>
                 )}
               </div>
